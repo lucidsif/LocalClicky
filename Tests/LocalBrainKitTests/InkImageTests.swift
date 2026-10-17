@@ -4,6 +4,9 @@ import ImageIO
 @testable import LocalBrainKit
 
 final class InkImageTests: XCTestCase {
+    private let resolvedStyle = InkPalette.resolve(preset: .standard, increaseContrast: false,
+                                                   differentiateWithoutColor: false, reduceMotion: false).userInk
+
     // MARK: - Synthetic image helpers
 
     private func makeJPEG(width: Int, height: Int, gray: CGFloat = 0.5) -> Data {
@@ -119,20 +122,15 @@ final class InkImageTests: XCTestCase {
 
     func testNoStrokesStillReturnsSameSizeJPEG() throws {
         let source = makeJPEG(width: 120, height: 90)
-        let out = try XCTUnwrap(InkImage.compositeInk(jpegData: source, strokesInImagePixels: [], style: .provisional))
+        let out = try XCTUnwrap(InkImage.compositeInk(jpegData: source, strokesInImagePixels: [], style: resolvedStyle))
         let pixels = try XCTUnwrap(decodePixels(out))
         XCTAssertEqual(pixels.width, 120)
         XCTAssertEqual(pixels.height, 90)
     }
 
     func testGarbageDataReturnsNil() {
-        XCTAssertNil(InkImage.compositeInk(jpegData: Data([1, 2, 3]), strokesInImagePixels: [], style: .provisional))
+        XCTAssertNil(InkImage.compositeInk(jpegData: Data([1, 2, 3]), strokesInImagePixels: [], style: resolvedStyle))
         XCTAssertNil(InkImage.cropAround(jpegData: Data([1, 2, 3]), rectInImagePixels: .zero))
-    }
-
-    func testProvisionalStyleHasACasingAndACore() {
-        XCTAssertEqual(InkStyle.provisional.layers.count, 2)
-        XCTAssertGreaterThan(InkStyle.provisional.layers[0].width, InkStyle.provisional.layers[1].width)
     }
 
     // MARK: - crop rect math

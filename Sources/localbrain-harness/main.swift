@@ -771,7 +771,8 @@ func runSelfTest() -> Never {
     if let base = inkJPEG(width: 200, height: 120),
        let inked = InkImage.compositeInk(jpegData: base,
                                          strokesInImagePixels: [[CGPoint(x: 20, y: 60), CGPoint(x: 180, y: 60)]],
-                                         style: .provisional) {
+                                         style: InkPalette.resolve(preset: .standard, increaseContrast: false,
+                                                                   differentiateWithoutColor: false, reduceMotion: false).userInk) {
         let inkedImage = CGImageSourceCreateWithData(inked as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
         check("ink image: composite keeps the pixel size", inkedImage?.width == 200 && inkedImage?.height == 120)
         check("ink image: crop returns a rect inside the image",
@@ -823,6 +824,21 @@ func runSelfTest() -> Never {
     check("pointing label: none, empty and long are ignored",
           PointingLabel.bubbleText(from: "none") == nil && PointingLabel.bubbleText(from: "") == nil
           && PointingLabel.bubbleText(from: "the small gear shaped settings control") == nil)
+
+    let paletteDefault = InkPalette.resolve(preset: .standard, increaseContrast: false,
+                                            differentiateWithoutColor: false, reduceMotion: false)
+    let paletteContrast = InkPalette.resolve(preset: .standard, increaseContrast: true,
+                                             differentiateWithoutColor: true, reduceMotion: true, pointsToPixelsScale: 0.5)
+    check("ink palette: default user ink is white casing, dark casing, yellow core",
+          paletteDefault.userInk.layers.map(\.width) == [10, 7, 4]
+          && paletteDefault.userInk.layers.map(\.alpha) == [1, 1, 1]
+          && abs(paletteDefault.userInk.layers[2].red - 240.0 / 255) < 1e-9)
+    check("ink palette: increase contrast widens, scales with pixels, dashes assistant, shortens the fade",
+          paletteContrast.userInk.layers.map(\.width) == [6.5, 4.5, 2.5]
+          && paletteContrast.assistantDashed && paletteContrast.fade == InkFadeTimings(hold: 1.5, fade: 0.25))
+    check("ink palette: high visibility is dashed whatever the flags",
+          InkPalette.resolve(preset: .highVisibility, increaseContrast: false, differentiateWithoutColor: false,
+                             reduceMotion: false).assistantDashed)
 
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")

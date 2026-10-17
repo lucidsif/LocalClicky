@@ -43,14 +43,6 @@ public struct InkStyle: Equatable, Sendable {
     public init(layers: [InkStrokeLayer]) {
         self.layers = layers
     }
-
-    /// PROVISIONAL: a placeholder so the pipeline works end to end. The real
-    /// palette and widths are not decided yet; do not treat these values as the
-    /// brand colours.
-    public static let provisional = InkStyle(layers: [
-        InkStrokeLayer(red: 1, green: 1, blue: 1, alpha: 0.9, width: 9),
-        InkStrokeLayer(red: 0.95, green: 0.25, blue: 0.15, alpha: 1, width: 4),
-    ])
 }
 
 public struct InkCrop: Equatable, Sendable {
