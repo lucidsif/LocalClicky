@@ -82,6 +82,13 @@ public enum OllamaError: Error, LocalizedError {
             return "Couldn't parse Ollama's response: \(detail)"
         }
     }
+
+    /// A short spoken reason when the error body came from the Studio gateway
+    /// (see GatewayErrorSpeech); nil for every other error.
+    public var speakableReason: String? {
+        if case .httpStatus(_, let body) = self { return GatewayErrorSpeech.speakable(fromBody: body) }
+        return nil
+    }
 }
 
 /// Async client for a local Ollama instance. Thread-safe and cheap to hold for
@@ -368,6 +375,11 @@ public final class OllamaClient: @unchecked Sendable {
             var errorChunks: [String] = []
             for try await line in byteStream.lines { errorChunks.append(line) }
             let errorBody = errorChunks.joined(separator: "\n")
+            // A gateway error carries its own spoken reason; keep the body so it
+            // can be heard instead of being folded into "model not installed".
+            if GatewayErrorSpeech.speakable(fromBody: errorBody) != nil {
+                throw OllamaError.httpStatus(httpResponse.statusCode, errorBody)
+            }
             if httpResponse.statusCode == 404 || errorBody.lowercased().contains("not found") {
                 throw OllamaError.modelNotInstalled(model)
             }

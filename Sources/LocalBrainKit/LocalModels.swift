@@ -78,7 +78,21 @@ public enum LocalModels {
 
     /// Default local Ollama endpoint. Overridable so a user running Ollama on a
     /// non-standard port can point the app at it.
-    public static let defaultOllamaBaseURL = URL(string: "http://127.0.0.1:11434")!
+    ///
+    /// Studio-gateway patch: `LOCALCLICKY_OLLAMA_URL` (env) or the `ollamaBaseURL` default in the
+    /// `com.localclicky.LocalClicky` domain (`defaults write com.localclicky.LocalClicky ollamaBaseURL
+    /// http://127.0.0.1:11435`) overrides the endpoint. Only loopback URLs are honored, so the
+    /// "nothing leaves this Mac" property of the app itself is unchanged.
+    public static var defaultOllamaBaseURL: URL {
+        let fallback = URL(string: "http://127.0.0.1:11434")!
+        let raw = ProcessInfo.processInfo.environment["LOCALCLICKY_OLLAMA_URL"]
+            ?? UserDefaults(suiteName: "com.localclicky.LocalClicky")?.string(forKey: "ollamaBaseURL")
+        guard let raw, let url = URL(string: raw), url.scheme == "http",
+              let host = url.host, host == "127.0.0.1" || host == "localhost" || host == "::1" else {
+            return fallback
+        }
+        return url
+    }
 
     /// Whether a vision model can plausibly return pixel coordinates for pointing.
     /// Ollama doesn't expose a "grounding" capability, so this is a deliberately

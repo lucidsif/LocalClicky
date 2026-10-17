@@ -146,6 +146,37 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
     private var currentResponseIdentifier: UUID?
 
+    /// Stage timing for the turn in progress, from key down to the cursor
+    /// landing. Timings only, never the question or the answer (see TurnTimer).
+    private var turnTimer: TurnTimer?
+    /// Set once a turn's response task has ended. While the cursor is still in
+    /// flight the record stays open: it is written on arrival, or by the flush
+    /// timeout.
+    private var finishedTurnOutcome: String?
+    private var turnRecordFlushTask: Task<Void, Never>?
+
+    /// A click turn clicks after the cursor lands, not after a fixed delay.
+    private var clickGate = ClickGate()
+    private var pendingClickCGPoint: CGPoint?
+    private var clickFallbackTask: Task<Void, Never>?
+
+    /// The screenshot started at key press, in parallel with listening. The
+    /// transcript handler claims it (and clears this); a press that ends with no
+    /// transcript, or a newer press, discards it. It lives only in memory.
+    private struct PressCapture {
+        let task: Task<CompanionScreenCapture?, Never>
+        let startedAtNanoseconds: UInt64
+    }
+    private var pressCapture: PressCapture?
+
+    /// Pointing state for one response, touched only on the main actor. It lets
+    /// the stream-end path know whether the cursor already left early, and stops
+    /// a late early-dispatch from running after the final parse took over.
+    private final class TurnPointingState {
+        var earlyDispatchedImagePoint: CGPoint?
+        var isFinalized = false
+    }
+
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
@@ -227,6 +258,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        buddyDictationManager.onListeningStarted = { [weak self] in self?.turnTimer?.mark(.listeningStarted) }
         refreshLocalEngineStatus()
 
         // Pay one-time warm-up costs now, in the background, so the user's first
@@ -852,6 +884,11 @@ final class CompanionManager: ObservableObject {
                 // state. Without this, a turn that began while still speaking could
                 // leave the UI wedged on "responding".
                 let userIsInteracting = isRecording || isFinalizing || isPreparing
+                // Dictation ended. If it produced a transcript, the response
+                // handler already claimed the key-press screenshot (that runs
+                // before this callback), so anything left is from an empty or
+                // cancelled press and is dropped.
+                if !userIsInteracting { self.discardPressCapture() }
                 if self.voiceState == .responding && !userIsInteracting { return }
                 if isFinalizing {
                     self.voiceState = .processing
@@ -899,6 +936,10 @@ final class CompanionManager: ObservableObject {
             dismissSideText()
             lastResponseLatencyDescription = nil
 
+            cancelPendingClick()
+            beginTurnTimer()
+            startPressCapture(timer: turnTimer)
+
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
@@ -907,18 +948,122 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         guard let self else { return }
                         self.lastTranscript = finalTranscript
+                        self.turnTimer?.mark(.transcriptFinal)
                         print("🗣️ LocalClicky received transcript: \(finalTranscript)")
                         self.sendTranscriptToLocalModel(transcript: finalTranscript)
                     }
                 )
             }
         case .released:
+            turnTimer?.mark(.keyUp)
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
         case .none:
             break
         }
+    }
+
+    // MARK: - Screenshot at key press
+
+    /// Starts the capture the instant the key goes down so it overlaps the
+    /// speaking time instead of adding to the wait after release. Only runs
+    /// when a screen turn is possible; if it fails, the turn falls back to
+    /// capturing after the transcript, as before.
+    private func startPressCapture(timer: TurnTimer?) {
+        discardPressCapture()
+        guard PressCapturePolicy.shouldCapture(
+            textOnlyMode: isTextOnlyMode,
+            screenPermissionGranted: hasScreenRecordingPermission
+        ) else { return }
+
+        let task = Task { () -> CompanionScreenCapture? in
+            guard let capture = try? await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG(),
+                  !Task.isCancelled else { return nil }
+            timer?.mark(.screenshotReady)
+            return capture
+        }
+        pressCapture = PressCapture(task: task, startedAtNanoseconds: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    private func discardPressCapture() {
+        pressCapture?.task.cancel()
+        pressCapture = nil
+    }
+
+    /// The screenshot for a screen turn: the key-press capture when it is
+    /// there and fresh enough, else a new capture now (the old timing path).
+    private func screenCaptureForTurn(
+        claimed: PressCapture?,
+        timer: TurnTimer?
+    ) async -> CompanionScreenCapture? {
+        if let claimed {
+            let ageSeconds = Double(DispatchTime.now().uptimeNanoseconds - claimed.startedAtNanoseconds) / 1_000_000_000
+            if PressCapturePolicy.shouldReuse(ageSeconds: ageSeconds),
+               let capture = await claimed.task.value {
+                timer?.setScreenshotCapturedAtPress(true)
+                return capture
+            }
+        }
+        timer?.setScreenshotCapturedAtPress(false)
+        guard let capture = try? await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG() else { return nil }
+        timer?.mark(.screenshotReady)
+        return capture
+    }
+
+    // MARK: - Turn timing
+
+    private func beginTurnTimer() {
+        flushTurnTimer()
+        turnTimer = TurnTimer()
+    }
+
+    /// Writes the record of a turn that has a transcript. A press that never
+    /// produced one (empty or cancelled) is dropped without a trace.
+    private func writeTurnRecord(_ timer: TurnTimer, outcome: String) {
+        guard timer.hasMarked(.transcriptFinal) else { return }
+        let record = timer.snapshot(outcome: outcome)
+        print("⏱️ turn timing: \(record.jsonLine())")
+        if !TurnTimingLog.append(record) {
+            print("⚠️ could not write the turn timing log")
+        }
+    }
+
+    /// Writes any record still open (a turn waiting on its cursor, or one cut
+    /// off by the next press) and clears the timer.
+    private func flushTurnTimer() {
+        turnRecordFlushTask?.cancel()
+        turnRecordFlushTask = nil
+        if let timer = turnTimer {
+            writeTurnRecord(timer, outcome: finishedTurnOutcome ?? "interrupted")
+        }
+        turnTimer = nil
+        finishedTurnOutcome = nil
+    }
+
+    /// Called when a turn's response task ends. A turn that pointed keeps its
+    /// record open until the cursor lands, so "cursor arrival" can be in it.
+    private func finishTurnTimer(_ timer: TurnTimer, outcome: String) {
+        guard turnTimer === timer else { return }
+        finishedTurnOutcome = outcome
+        if timer.snapshot(outcome: outcome).pointParsed && !timer.hasMarked(.cursorArrival) {
+            turnRecordFlushTask?.cancel()
+            turnRecordFlushTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.flushTurnTimer()
+            }
+            return
+        }
+        flushTurnTimer()
+    }
+
+    /// The overlay calls this when the blue cursor lands on the target.
+    func noteCursorArrival() {
+        if clickGate.noteArrival() { firePendingClick() }
+        guard let timer = turnTimer, timer.hasMarked(.tagParsed) else { return }
+        timer.mark(.cursorArrival)
+        if finishedTurnOutcome != nil { flushTurnTimer() }
     }
 
     // MARK: - AI Response Pipeline (fully local)
@@ -934,9 +1079,14 @@ final class CompanionManager: ObservableObject {
 
         let responseIdentifier = UUID()
         currentResponseIdentifier = responseIdentifier
+        let timer = turnTimer
+        let claimedPressCapture = pressCapture
+        pressCapture = nil
         currentResponseTask = Task {
             voiceState = .processing
+            var turnOutcome = "completed"
             defer {
+                if let timer { finishTurnTimer(timer, outcome: Task.isCancelled ? "interrupted" : turnOutcome) }
                 if currentResponseIdentifier == responseIdentifier {
                     currentResponseTask = nil
                     currentResponseIdentifier = nil
@@ -957,6 +1107,8 @@ final class CompanionManager: ObservableObject {
                         hasConversationHistory: !conversationHistory.isEmpty
                     )
                 )
+
+                timer?.setRoute(String(describing: route))
 
                 // Deterministic action requests (browser nav, launching an app,
                 // copying the last answer) are handled before any screenshot —
@@ -1008,7 +1160,11 @@ final class CompanionManager: ObservableObject {
                 var userImagesBase64: [String] = []
                 let model: String
 
-                if useScreen, let capture = try? await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG() {
+                if !useScreen { claimedPressCapture?.task.cancel() }
+                let screenCapture = useScreen
+                    ? await screenCaptureForTurn(claimed: claimedPressCapture, timer: timer)
+                    : nil
+                if let capture = screenCapture {
                     cursorScreenCapture = capture
                     userImagesBase64 = [capture.imageData.base64EncodedString()]
                     if wantsPointing {
@@ -1046,6 +1202,12 @@ final class CompanionManager: ObservableObject {
 
                 guard !Task.isCancelled else { return }
 
+                timer?.setModel(model)
+                if let capture = cursorScreenCapture {
+                    timer?.setImageSize(width: capture.screenshotWidthInPixels,
+                                        height: capture.screenshotHeightInPixels)
+                }
+
                 // Give conversational turns awareness of the real-world clock so
                 // "what time is it / what's today's date / what day is it" work —
                 // the model has no clock of its own. Pointing/click turns get the
@@ -1075,7 +1237,10 @@ final class CompanionManager: ObservableObject {
                     for await sentence in sentenceStream {
                         if Task.isCancelled { break }
                         guard let self else { break }
-                        do { try await self.speechSynthesizer.speakText(sentence) }
+                        do {
+                            try await self.speechSynthesizer.speakText(sentence)
+                            timer?.mark(.firstAudio)
+                        }
                         catch is CancellationError { break }
                         catch { print("⚠️ TTS error: \(error)") }
                     }
@@ -1089,6 +1254,14 @@ final class CompanionManager: ObservableObject {
                     if cursorScreenCapture == nil { return 420 }
                     return 320
                 }()
+                // Fly the cursor as soon as the tag's closing bracket streams in,
+                // rather than after the stream ends. The final parse below still
+                // decides: if it disagrees, the final point wins.
+                let pointingCapture = cursorScreenCapture
+                let pointDetector = StreamingPointDetector()
+                let pointingState = TurnPointingState()
+
+                timer?.mark(.requestSent)
                 let result = try await ollamaClient.streamChat(
                     model: model,
                     messages: messages,
@@ -1097,12 +1270,27 @@ final class CompanionManager: ObservableObject {
                     keepAlive: hardwareRecommendation.keepAlive,
                     contextWindow: contextWindow(forModel: model),
                     onText: { accumulated in
+                        timer?.mark(.firstToken)
                         let speakable = SpokenTextSegmenter.speakablePrefix(accumulated)
                         if let (sentence, _) = speechProgress.advance(speakable: speakable) {
                             sentenceContinuation.yield(sentence)
                         }
+                        if let capture = pointingCapture,
+                           let tag = pointDetector.feed(accumulated: accumulated),
+                           let center = tag.centerInImagePixels {
+                            Task { @MainActor [weak self] in
+                                guard let self,
+                                      !pointingState.isFinalized,
+                                      self.currentResponseIdentifier == responseIdentifier else { return }
+                                pointingState.earlyDispatchedImagePoint = center
+                                timer?.mark(.tagParsed)
+                                timer?.setPointParsed(true)
+                                self.dispatchPointerFlight(toImagePoint: center, label: tag.label, in: capture)
+                            }
+                        }
                     }
                 )
+                pointingState.isFinalized = true
 
                 guard !Task.isCancelled else {
                     sentenceContinuation.finish()
@@ -1112,6 +1300,10 @@ final class CompanionManager: ObservableObject {
 
                 let pointing = PointingTagParser.parse(from: result.text)
                 let spokenText = pointing.spokenText
+                if pointing.hasPoint {
+                    timer?.mark(.tagParsed)
+                    timer?.setPointParsed(true)
+                }
 
                 // Flush the final sentence (no trailing space, so not emitted
                 // during streaming), then close the stream so the speaker drains.
@@ -1120,20 +1312,28 @@ final class CompanionManager: ObservableObject {
                 if !remainder.isEmpty { sentenceContinuation.yield(remainder) }
                 sentenceContinuation.finish()
 
-                // Switch to idle BEFORE setting the location so the triangle is
-                // visible and can fly to the target.
-                if pointing.hasPoint { voiceState = .idle }
-
-                if let center = pointing.centerInImagePixels, let capture = cursorScreenCapture {
-                    let globalLocation = globalScreenLocation(forImagePoint: center, in: capture)
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = capture.displayFrame
-                    print("🎯 Pointing at \"\(pointing.label ?? "element")\" → (\(Int(center.x)), \(Int(center.y))) px")
+                if let capture = cursorScreenCapture {
+                    var clickLocation: CGPoint?
+                    switch PointReconciliation.reconcile(
+                        early: pointingState.earlyDispatchedImagePoint,
+                        final: pointing.centerInImagePixels
+                    ) {
+                    case .nothing:
+                        break
+                    case .keepEarly:
+                        if let center = pointing.centerInImagePixels {
+                            clickLocation = globalScreenLocation(forImagePoint: center, in: capture)
+                        }
+                    case .dispatchFinal(let center):
+                        clickLocation = dispatchPointerFlight(toImagePoint: center, label: pointing.label, in: capture)
+                    case .earlyWithdrawn:
+                        print("⚠️ The final parse has no point but the cursor already left early; not clicking.")
+                    }
                     // On a click turn, let the blue cursor visibly fly to the
                     // target first, then perform a real click there so the user
                     // sees exactly what's about to be clicked.
-                    if performClick {
-                        scheduleRealClick(atGlobalAppKitPoint: globalLocation)
+                    if performClick, let clickLocation {
+                        scheduleRealClick(atGlobalAppKitPoint: clickLocation)
                     }
                 }
 
@@ -1164,10 +1364,12 @@ final class CompanionManager: ObservableObject {
                     scheduleTransientHideIfNeeded()
                 }
             } catch let error as OllamaError {
+                turnOutcome = "error"
                 print("⚠️ Local model error: \(error.localizedDescription)")
                 refreshLocalEngineStatus()
-                speakErrorFallback()
+                speakErrorFallback(reason: error.speakableReason)
             } catch {
+                turnOutcome = "error"
                 print("⚠️ Companion response error: \(error)")
                 speakErrorFallback()
             }
@@ -1534,6 +1736,24 @@ final class CompanionManager: ObservableObject {
         )
     }
 
+    /// Sends the blue cursor to a point in the screenshot's pixel space and
+    /// returns the global AppKit location it maps to. Switches to idle BEFORE
+    /// setting the location so the triangle is visible and can fly to the target.
+    @discardableResult
+    private func dispatchPointerFlight(
+        toImagePoint center: CGPoint,
+        label: String?,
+        in capture: CompanionScreenCapture
+    ) -> CGPoint {
+        voiceState = .idle
+        clickGate.targetChanged()
+        let globalLocation = globalScreenLocation(forImagePoint: center, in: capture)
+        detectedElementScreenLocation = globalLocation
+        detectedElementDisplayFrame = capture.displayFrame
+        print("🎯 Pointing at \"\(label ?? "element")\" → (\(Int(center.x)), \(Int(center.y))) px")
+        return globalLocation
+    }
+
     /// A short present-tense line describing the real-world context (current
     /// date, weekday, and local time) appended to conversational system prompts so
     /// the model can answer "what time is it / what's today's date / what day is
@@ -1546,18 +1766,42 @@ final class CompanionManager: ObservableObject {
         return "for reference, the user's current local date and time is \(stamp). if they ask what time/day/date it is, answer from this naturally and spoken-style; otherwise ignore it."
     }
 
-    /// Performs a real click at the grounded element after letting the blue
-    /// cursor visibly fly there first. Only ever called on an explicit click turn
-    /// (route `.screenClick`) — never on describe/point turns — and a click is the
-    /// only action it can take.
+    /// Performs a real click at the grounded element once the blue cursor has
+    /// visibly landed there, so the click is clearly telegraphed. Only ever
+    /// called on an explicit click turn (route `.screenClick`) and only after
+    /// the final parse confirmed the point. A click is the only action it can
+    /// take. If the overlay never reports arrival, a fallback fires it after
+    /// `ClickGate.fallbackTimeoutSeconds`. Pressing the key again cancels it.
     private func scheduleRealClick(atGlobalAppKitPoint appKitPoint: CGPoint) {
-        let cgPoint = ClickActionExecutor.cgGlobalPoint(fromAppKitGlobalPoint: appKitPoint)
-        // Give the cursor animation ~0.9s to land on the target so the click is
-        // clearly telegraphed, then click.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-            print("🖱️ Click: at CG (\(Int(cgPoint.x)), \(Int(cgPoint.y)))")
-            ClickActionExecutor.click(atCGGlobalPoint: cgPoint)
+        pendingClickCGPoint = ClickActionExecutor.cgGlobalPoint(fromAppKitGlobalPoint: appKitPoint)
+        if clickGate.requestClick() {
+            firePendingClick()
+            return
         }
+        clickFallbackTask?.cancel()
+        clickFallbackTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(ClickGate.fallbackTimeoutSeconds * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            if self.clickGate.noteTimeout() { self.firePendingClick() }
+        }
+    }
+
+    private func firePendingClick() {
+        clickFallbackTask?.cancel()
+        clickFallbackTask = nil
+        guard let cgPoint = pendingClickCGPoint else { return }
+        pendingClickCGPoint = nil
+        print("🖱️ Click: at CG (\(Int(cgPoint.x)), \(Int(cgPoint.y)))")
+        ClickActionExecutor.click(atCGGlobalPoint: cgPoint)
+    }
+
+    /// Drops a click that has not fired yet and starts a fresh gate for the
+    /// next turn (a new key press interrupts the old turn).
+    private func cancelPendingClick() {
+        clickFallbackTask?.cancel()
+        clickFallbackTask = nil
+        pendingClickCGPoint = nil
+        clickGate.reset()
     }
 
     private func formatLatencyBadge(_ result: OllamaChatResult) -> String? {
@@ -1591,11 +1835,12 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Speaks a short on-device error line when the local model can't answer
-    /// (Ollama not running, model missing, etc.).
-    private func speakErrorFallback() {
-        let utterance = isLocalEngineReachable
+    /// (Ollama not running, model missing, etc.). `reason` is the real cause
+    /// when the Studio gateway reported one (studio off, busy, model not loaded).
+    private func speakErrorFallback(reason: String? = nil) {
+        let utterance = reason ?? (isLocalEngineReachable
             ? "hmm, my local brain hiccuped. give it another try."
-            : "my local engine isn't running. start ollama and i'll be right back."
+            : "my local engine isn't running. start ollama and i'll be right back.")
         voiceState = .responding
         Task { try? await speechSynthesizer.speakText(utterance) }
     }

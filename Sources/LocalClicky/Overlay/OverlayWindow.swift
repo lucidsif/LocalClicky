@@ -556,6 +556,7 @@ struct BlueCursorView: View {
     /// scale-in entrance and variable-speed character streaming.
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
+        companionManager.noteCursorArrival()
 
         // Rotate back to default pointer angle now that we've arrived
         triangleRotationDegrees = -35.0
