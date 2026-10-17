@@ -58,8 +58,8 @@ final class InkTrailModel: ObservableObject {
     private var origin: CGPoint?
     private var fadeTask: Task<Void, Never>?
 
-    /// The user's chosen preset. There is no settings control yet; this reads
-    /// and writes UserDefaults so one can be added without touching the model.
+    /// The user's chosen preset, set from the panel's "Ink style" menu. It reads
+    /// and writes UserDefaults and re-resolves the style live.
     var preset: InkPreset {
         didSet {
             UserDefaults.standard.set(preset.rawValue, forKey: Self.presetDefaultsKey)

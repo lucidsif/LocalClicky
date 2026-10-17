@@ -961,6 +961,10 @@ func runSelfTest() -> Never {
           markTimerLine.contains("first_mark") && markTimerLine.contains("\"marks\":2")
           && TurnTimingRecord.allowedJSONKeys.contains("marks"))
 
+    check("model roles: grounding needs vision, defaults to the grounding model, others unchanged",
+          ModelRole.grounding.requiredCapability == "vision" && ModelRole.grounding.defaultModel == LocalModels.defaultGroundingModel
+          && ModelRole.chat.requiredCapability == "completion" && ModelRole.vision.defaultModel == LocalModels.defaultVisionModel)
+
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")
     check("OllamaClient talks only to localhost", OllamaClient().baseURL.host == "127.0.0.1")
