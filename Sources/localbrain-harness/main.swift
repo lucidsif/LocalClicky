@@ -931,6 +931,36 @@ func runSelfTest() -> Never {
           drawPrompt.contains("1152x748") && drawPrompt.contains("[SHAPE:") && drawPrompt.contains("[HIGHLIGHT:")
           && drawPrompt.contains("just outside the thing") && drawPrompt.contains("say what the mark is on"))
 
+    let markCircle = OverlayDrawing.shape(kind: .circle, points: [CGPoint(x: 300, y: 200), CGPoint(x: 340, y: 200)])
+    let markGeometry = MarkGeometryBuilder.geometry(for: markCircle)
+    check("mark geometry: a circle is two closed passes, deterministic",
+          markGeometry.passes.count == 2 && markGeometry.passes.allSatisfy { $0.count == 1 && $0[0].isClosed }
+          && markGeometry == MarkGeometryBuilder.geometry(for: markCircle))
+    var markMaxGap = 0.0
+    for (first, second) in zip(markGeometry.passes[0][0].points, markGeometry.passes[1][0].points) {
+        markMaxGap = max(markMaxGap, Double(hypot(first.x - second.x, first.y - second.y)))
+    }
+    check("mark geometry: the second pass is within 1.5 pt of the first", markMaxGap <= MarkGeometryBuilder.maxPassOffset && markMaxGap > 0)
+    let markArrow = MarkGeometryBuilder.arrowhead(tail: CGPoint(x: 0, y: 0), tip: CGPoint(x: 200, y: 0))
+    check("mark geometry: the arrowhead sits on the tip, barbs trail back",
+          markArrow[1] == CGPoint(x: 200, y: 0) && markArrow[0].x < 200 && markArrow[2].x < 200)
+    let markCurve = MarkGeometryBuilder.catmullRom([CGPoint(x: 0, y: 0), CGPoint(x: 50, y: 40), CGPoint(x: 100, y: 0)], samplesPerSegment: 12)
+    check("mark geometry: the curve passes through its points",
+          markCurve.first == CGPoint(x: 0, y: 0) && markCurve.last == CGPoint(x: 100, y: 0)
+          && abs(markCurve[12].x - 50) < 1e-9 && abs(markCurve[12].y - 40) < 1e-9)
+    let markMap = ScreenMapping(displayFrame: CGRect(x: 0, y: 0, width: 500, height: 250), displayWidthInPoints: 500,
+                                displayHeightInPoints: 250, screenshotWidthInPixels: 1000, screenshotHeightInPixels: 500)
+    check("mark geometry: a tag maps from screenshot pixels to overlay points",
+          ShapeTagParser.parseTag("[SHAPE:line:600,300;800,400]").map { MarkGeometryBuilder.overlayDrawing(from: $0, mapping: markMap) }
+              == .shape(kind: .line, points: [CGPoint(x: 300, y: 150), CGPoint(x: 400, y: 200)]))
+    let markTimer = TurnTimer()
+    markTimer.mark(.firstMark)
+    markTimer.setMarks(2)
+    let markTimerLine = markTimer.snapshot(outcome: "completed").jsonLine()
+    check("turn timer: first_mark stage and marks count, key stays allowed",
+          markTimerLine.contains("first_mark") && markTimerLine.contains("\"marks\":2")
+          && TurnTimingRecord.allowedJSONKeys.contains("marks"))
+
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")
     check("OllamaClient talks only to localhost", OllamaClient().baseURL.host == "127.0.0.1")

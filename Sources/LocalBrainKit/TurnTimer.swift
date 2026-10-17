@@ -36,6 +36,8 @@ public enum TurnStage: String, CaseIterable, Sendable {
     case inkReady = "ink_ready"
     /// The Accessibility harvest for the marked area finished (or hit its budget).
     case axReady = "ax_ready"
+    /// The first assistant mark (SHAPE or HIGHLIGHT) was handed to the overlay.
+    case firstMark = "first_mark"
 }
 
 /// An immutable snapshot of one finished (or abandoned) turn.
@@ -58,6 +60,9 @@ public struct TurnTimingRecord: Equatable, Sendable {
     public var inkMarks: Int?
     /// True when the close-up crop was sent as a second image. Nil on a turn with no ink.
     public var inkCrop: Bool?
+    /// How many assistant marks (shapes and highlights) the turn drew. Nil on a
+    /// turn that did not draw.
+    public var marks: Int?
     /// "completed", "interrupted", or "error".
     public var outcome: String
 
@@ -77,7 +82,7 @@ public struct TurnTimingRecord: Equatable, Sendable {
     /// field (and above all a text field) is a deliberate, reviewed change.
     public static let allowedJSONKeys: Set<String> = [
         "turn_id", "started_at", "stages_ms", "route", "model", "image_width", "image_height",
-        "point_parsed", "screenshot_at_press", "outcome", "ink_marks", "ink_crop",
+        "point_parsed", "screenshot_at_press", "outcome", "ink_marks", "ink_crop", "marks",
         "release_to_first_audio_ms", "release_to_cursor_ms",
     ]
 
@@ -99,6 +104,7 @@ public struct TurnTimingRecord: Equatable, Sendable {
         if let screenshotCapturedAtPress { object["screenshot_at_press"] = screenshotCapturedAtPress }
         if let inkMarks { object["ink_marks"] = inkMarks }
         if let inkCrop { object["ink_crop"] = inkCrop }
+        if let marks { object["marks"] = marks }
         if let value = releaseToFirstAudioMilliseconds { object["release_to_first_audio_ms"] = Self.rounded(value) }
         if let value = releaseToCursorMilliseconds { object["release_to_cursor_ms"] = Self.rounded(value) }
 
@@ -127,6 +133,7 @@ public final class TurnTimer: @unchecked Sendable {
     private var screenshotCapturedAtPress: Bool?
     private var inkMarks: Int?
     private var inkCrop: Bool?
+    private var markCount: Int?
 
     /// - Parameters:
     ///   - now: monotonic nanoseconds. Injected so tests use fixed numbers.
@@ -189,6 +196,12 @@ public final class TurnTimer: @unchecked Sendable {
         inkCrop = crop
     }
 
+    /// A count only: how many assistant marks the turn drew.
+    public func setMarks(_ count: Int) {
+        lock.lock(); defer { lock.unlock() }
+        markCount = count
+    }
+
     public func snapshot(outcome: String) -> TurnTimingRecord {
         lock.lock(); defer { lock.unlock() }
         var offsets: [TurnStage: Double] = [:]
@@ -210,6 +223,7 @@ public final class TurnTimer: @unchecked Sendable {
             screenshotCapturedAtPress: screenshotCapturedAtPress,
             inkMarks: inkMarks,
             inkCrop: inkCrop,
+            marks: markCount,
             outcome: outcome
         )
     }
