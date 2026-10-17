@@ -109,6 +109,8 @@ struct BlueCursorView: View {
     /// The live ink trail, shared by every screen's overlay. Observed here so the
     /// cursor outline follows the resolved style live.
     @ObservedObject var inkTrail: InkTrailModel
+    /// The assistant's marks (ink out), drawn for this screen only.
+    @ObservedObject var assistantMarks: AssistantMarksModel
 
     @State private var cursorPosition: CGPoint
     @State private var isCursorOnThisScreen: Bool
@@ -118,6 +120,7 @@ struct BlueCursorView: View {
         self.isFirstAppearance = isFirstAppearance
         self.companionManager = companionManager
         self.inkTrail = companionManager.inkTrail
+        self.assistantMarks = companionManager.assistantMarks
 
         // Seed the cursor position from the current mouse location so the
         // buddy doesn't flash at (0,0) before onAppear fires.
@@ -207,6 +210,10 @@ struct BlueCursorView: View {
             // The user's ink. First in the stack, so the cursor, waveform,
             // spinner and bubbles are all drawn on top of it.
             InkTrailLayer(trail: inkTrail, screenFrame: screenFrame)
+
+            // The assistant's own marks (circle, arrow, highlight), also under
+            // the cursor and the bubbles.
+            AssistantMarksLayer(marks: assistantMarks, style: inkTrail.style, screenFrame: screenFrame)
 
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {

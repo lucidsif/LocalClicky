@@ -93,6 +93,11 @@ final class CompanionManager: ObservableObject {
     /// resident (see warm-up + Phase 4 residency).
     @Published private(set) var groundingModelName: String = ModelPreferences.groundingModel
 
+    /// "Let Clicky draw (beta)": when on, a turn that asks to circle, outline,
+    /// underline, highlight or mark something goes to the shape route. Off by
+    /// default; with it off, routing is exactly what it was.
+    @Published private(set) var drawingEnabled: Bool = ModelPreferences.drawingEnabled
+
     /// Every model installed in the user's Ollama, for the model picker, plus the
     /// subset that can accept images — so the vision role can only ever be filled
     /// by a model that can actually see the screen.
@@ -112,6 +117,9 @@ final class CompanionManager: ObservableObject {
     let overlayWindowManager = OverlayWindowManager()
     /// The live ink trail drawn on every overlay while the keys are held.
     let inkTrail = InkTrailModel()
+    /// The assistant's own marks (circle, arrow, highlight...) drawn on the
+    /// overlays while it speaks. Only filled when the drawing setting is on.
+    let assistantMarks = AssistantMarksModel()
 
     // MARK: - Local inference
 
@@ -184,6 +192,29 @@ final class CompanionManager: ObservableObject {
         var earlyDispatchedImagePoint: CGPoint?
         var isFinalized = false
     }
+
+    /// Drawings the stream has closed but the main actor has not shown yet, in
+    /// order. The streaming callback enqueues from its own thread; the main
+    /// actor drains, so the order never depends on how tasks interleave.
+    private final class TurnMarkQueue: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending: [InkDrawing] = []
+        private(set) var shownCount = 0
+        func enqueue(_ drawings: [InkDrawing]) {
+            guard !drawings.isEmpty else { return }
+            lock.lock(); defer { lock.unlock() }
+            pending.append(contentsOf: drawings)
+        }
+        func drain() -> [InkDrawing] {
+            lock.lock(); defer { lock.unlock() }
+            let ready = pending
+            pending = []
+            shownCount += ready.count
+            return ready
+        }
+    }
+
+    private var marksClearTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -451,16 +482,32 @@ final class CompanionManager: ObservableObject {
         case .vision:
             guard name != visionModelName else { return }
             visionModelName = name
+        case .grounding:
+            guard name != groundingModelName else { return }
+            groundingModelName = name
         }
         ModelPreferences.setModel(name, for: role)
         warmUpLocalModels()
         refreshLocalEngineStatus()
     }
 
+    func setDrawingEnabled(_ enabled: Bool) {
+        guard enabled != drawingEnabled else { return }
+        drawingEnabled = enabled
+        ModelPreferences.drawingEnabled = enabled
+        if !enabled { assistantMarks.clearNow() }
+    }
+
     /// The model to use for a pointing turn: the dedicated grounding model when
     /// it's installed, otherwise the main vision model (best effort — it may not
     /// actually ground). Kept in one place so the answer pipeline and any warm-up
     /// agree on which model pointing uses.
+    /// True when the chosen pointing model is not installed, so pointing and
+    /// drawing turns fall back to the Vision model. The panel shows a note.
+    var groundingFallsBackToVision: Bool {
+        !installedModels.isEmpty && resolvedGroundingModelName() != groundingModelName
+    }
+
     private func resolvedGroundingModelName() -> String {
         guard !installedModels.isEmpty else { return groundingModelName }
         let names = installedModels.map { $0.name }
@@ -940,6 +987,10 @@ final class CompanionManager: ObservableObject {
             currentResponseTask = nil
             currentResponseIdentifier = nil
             speechSynthesizer.stopPlayback()
+            // The next press clears the assistant's marks at once.
+            marksClearTask?.cancel()
+            marksClearTask = nil
+            assistantMarks.clearNow()
             clearDetectedElementLocation()
             dismissSideText()
             lastResponseLatencyDescription = nil
@@ -1123,6 +1174,8 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
             var turnOutcome = "completed"
             defer {
+                // Marks the turn drew clear 1.5 s after the speech ends.
+                if !Task.isCancelled { scheduleMarksClearAfterSpeech() }
                 if let timer { finishTurnTimer(timer, outcome: Task.isCancelled ? "interrupted" : turnOutcome) }
                 if currentResponseIdentifier == responseIdentifier {
                     currentResponseTask = nil
@@ -1140,7 +1193,7 @@ final class CompanionManager: ObservableObject {
                 // this a screen turn whatever the words say (see InkRouting). The
                 // package was started at key up, so this usually returns at once.
                 let inkPackage = await claimedInk?.value
-                let route = InkRouting.route(
+                let route = DrawingRouting.route(
                     transcript: transcript,
                     context: ConversationRouter.Context(
                         visionModeSelected: !isTextOnlyMode,
@@ -1148,7 +1201,8 @@ final class CompanionManager: ObservableObject {
                         previousTurnUsedScreen: previousTurnUsedScreen,
                         hasConversationHistory: !conversationHistory.isEmpty
                     ),
-                    hasUsableInk: inkPackage != nil
+                    hasUsableInk: inkPackage != nil,
+                    drawingEnabled: drawingEnabled
                 )
 
                 timer?.setRoute(String(describing: route))
@@ -1195,8 +1249,13 @@ final class CompanionManager: ObservableObject {
                 // A click turn grounds the element exactly like a pointing turn
                 // (same grounding model + tag); it just also clicks at the end.
                 let performClick = (route == .screenClick)
-                let useScreen = (route == .screen || route == .screenPoint || route == .screenClick)
+                let wantsDrawing = (route == .screenDraw)
+                let useScreen = (route == .screen || route == .screenPoint || route == .screenClick || wantsDrawing)
                 let wantsPointing = (route == .screenPoint || route == .screenClick)
+                // A drawing turn grounds like a pointing turn: the model's
+                // coordinates are in the full image, so no close-up, a tight
+                // prompt and no clock context.
+                let wantsGrounding = wantsPointing || wantsDrawing
 
                 var cursorScreenCapture: CompanionScreenCapture?
                 let systemPrompt: String
@@ -1220,9 +1279,9 @@ final class CompanionManager: ObservableObject {
                 if let capture = screenCapture {
                     cursorScreenCapture = capture
                     userImagesBase64 = [capture.imageData.base64EncodedString()]
-                    // Describe turns also get the close-up. Pointing and clicking
-                    // turns must not: their coordinates refer to the full image.
-                    if let usableInk, !wantsPointing, let closeUp = usableInk.cropImageData {
+                    // Describe turns also get the close-up. Pointing, clicking and
+                    // drawing turns must not: their coordinates refer to the full image.
+                    if let usableInk, !wantsGrounding, let closeUp = usableInk.cropImageData {
                         userImagesBase64.append(closeUp.base64EncodedString())
                         inkCloseUpAttached = true
                     }
@@ -1249,6 +1308,21 @@ final class CompanionManager: ObservableObject {
                                 imageHeightInPixels: capture.screenshotHeightInPixels)
                         }
                         model = pointingModel
+                    } else if wantsDrawing {
+                        // Drawing turn: the grounding model with the shape
+                        // prompt. If the resolved model cannot ground, describe
+                        // instead, the same fallback a pointing turn has.
+                        let drawingModel = resolvedGroundingModelName()
+                        if LocalModels.isLikelyGroundingCapable(drawingModel) {
+                            systemPrompt = LocalPrompts.screenDrawResponse(
+                                imageWidthInPixels: capture.screenshotWidthInPixels,
+                                imageHeightInPixels: capture.screenshotHeightInPixels)
+                        } else {
+                            systemPrompt = LocalPrompts.screenDescribe(
+                                imageWidthInPixels: capture.screenshotWidthInPixels,
+                                imageHeightInPixels: capture.screenshotHeightInPixels)
+                        }
+                        model = drawingModel
                     } else {
                         // Describe/answer turn: the default vision model (Moondream),
                         // which is strong at description but doesn't emit coordinates.
@@ -1275,7 +1349,7 @@ final class CompanionManager: ObservableObject {
                 // the model has no clock of its own. Pointing/click turns get the
                 // tight grounding prompt untouched (time is irrelevant + would only
                 // distract the tag output).
-                let systemWithContext = wantsPointing
+                let systemWithContext = wantsGrounding
                     ? systemPrompt
                     : systemPrompt + "\n\n" + Self.currentEnvironmentContext()
 
@@ -1323,6 +1397,8 @@ final class CompanionManager: ObservableObject {
                 // still asks for brevity) so answers don't get truncated mid-word.
                 let answerMaxTokens: Int = {
                     if wantsPointing { return 130 }
+                    // Up to three tag-first beat lines: tags are token-heavy.
+                    if wantsDrawing { return 260 }
                     if cursorScreenCapture == nil { return 420 }
                     return 320
                 }()
@@ -1332,6 +1408,11 @@ final class CompanionManager: ObservableObject {
                 let pointingCapture = cursorScreenCapture
                 let pointDetector = StreamingPointDetector()
                 let pointingState = TurnPointingState()
+                // Ink out: each closed SHAPE or HIGHLIGHT tag is shown the moment
+                // it closes. Only a drawing turn reads them.
+                let drawingCapture = wantsDrawing ? cursorScreenCapture : nil
+                let shapeDetector = StreamingShapeDetector()
+                let markQueue = TurnMarkQueue()
 
                 timer?.mark(.requestSent)
                 let result = try await ollamaClient.streamChat(
@@ -1346,6 +1427,18 @@ final class CompanionManager: ObservableObject {
                         let speakable = SpokenTextSegmenter.speakablePrefix(accumulated)
                         if let (sentence, _) = speechProgress.advance(speakable: speakable) {
                             sentenceContinuation.yield(sentence)
+                        }
+                        if drawingCapture != nil {
+                            let fresh = shapeDetector.feed(accumulated: accumulated)
+                            if !fresh.isEmpty {
+                                markQueue.enqueue(fresh)
+                                Task { @MainActor [weak self] in
+                                    guard let self,
+                                          self.currentResponseIdentifier == responseIdentifier,
+                                          let capture = drawingCapture else { return }
+                                    self.showQueuedMarks(markQueue, in: capture, timer: timer)
+                                }
+                            }
                         }
                         if let capture = pointingCapture,
                            let tag = pointDetector.feed(accumulated: accumulated),
@@ -1363,6 +1456,14 @@ final class CompanionManager: ObservableObject {
                     }
                 )
                 pointingState.isFinalized = true
+
+                // A tag that closed in the very last chunk. The detector never
+                // returns a tag twice, so this only adds what the stream missed.
+                if let capture = drawingCapture, !Task.isCancelled {
+                    markQueue.enqueue(shapeDetector.feed(accumulated: result.text))
+                    showQueuedMarks(markQueue, in: capture, timer: timer)
+                    timer?.setMarks(markQueue.shownCount)
+                }
 
                 guard !Task.isCancelled else {
                     sentenceContinuation.finish()
@@ -1808,6 +1909,40 @@ final class CompanionManager: ObservableObject {
         )
     }
 
+    /// Shows every drawing the stream has closed so far, in order, on the
+    /// overlay of the display the screenshot was taken of. Called when a tag
+    /// closes (the TTS queue has no per-sentence start event to hang this on).
+    private func showQueuedMarks(_ queue: TurnMarkQueue, in capture: CompanionScreenCapture, timer: TurnTimer?) {
+        let mapping = ScreenMapping(displayFrame: capture.displayFrame,
+                                    displayWidthInPoints: capture.displayWidthInPoints,
+                                    displayHeightInPoints: capture.displayHeightInPoints,
+                                    screenshotWidthInPixels: capture.screenshotWidthInPixels,
+                                    screenshotHeightInPixels: capture.screenshotHeightInPixels)
+        let reduceMotion = InkDisplayOptions.current().reduceMotion
+        for drawing in queue.drain() {
+            let geometry = MarkGeometryBuilder.geometry(for: MarkGeometryBuilder.overlayDrawing(from: drawing, mapping: mapping))
+            guard geometry.passes.contains(where: { !$0.isEmpty }) else { continue }
+            timer?.mark(.firstMark)
+            assistantMarks.add(geometry: geometry, displayFrame: capture.displayFrame, reduceMotion: reduceMotion)
+        }
+    }
+
+    /// Waits for the speech to finish, then starts the marks' hold and fade.
+    /// A new key press cancels it and clears the marks at once.
+    private func scheduleMarksClearAfterSpeech() {
+        guard assistantMarks.isShowing else { return }
+        marksClearTask?.cancel()
+        marksClearTask = Task { [weak self] in
+            while let self, self.speechSynthesizer.isPlaying {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                if Task.isCancelled { return }
+            }
+            guard let self, !Task.isCancelled else { return }
+            let fade = self.inkTrail.style.fade
+            self.assistantMarks.scheduleClear(hold: fade.hold, fade: fade.fade)
+        }
+    }
+
     /// Sends the blue cursor to a point in the screenshot's pixel space and
     /// returns the global AppKit location it maps to. Switches to idle BEFORE
     /// setting the location so the triangle is visible and can fly to the target.
@@ -1900,6 +2035,11 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
             }
             while detectedElementScreenLocation != nil {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            // Keep the overlay until the assistant's marks have faded out.
+            while assistantMarks.isShowing {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

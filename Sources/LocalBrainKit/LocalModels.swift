@@ -130,12 +130,15 @@ public enum ModelRole: String, CaseIterable, Sendable {
     case chat
     /// The screen vision + pointing model. Needs image input ("vision").
     case vision
+    /// The pointing model: grounds a UI element to pixel coordinates (the blue
+    /// cursor) and draws shapes. Needs image input, like the vision role.
+    case grounding
 
     /// The Ollama capability this role requires a model to advertise.
     public var requiredCapability: String {
         switch self {
         case .chat: return "completion"
-        case .vision: return "vision"
+        case .vision, .grounding: return "vision"
         }
     }
 
@@ -144,6 +147,7 @@ public enum ModelRole: String, CaseIterable, Sendable {
         switch self {
         case .chat: return "Text model"
         case .vision: return "Vision model"
+        case .grounding: return "Pointing model"
         }
     }
 
@@ -152,6 +156,7 @@ public enum ModelRole: String, CaseIterable, Sendable {
         switch self {
         case .chat: return LocalModels.defaultChatModel
         case .vision: return LocalModels.defaultVisionModel
+        case .grounding: return LocalModels.defaultGroundingModel
         }
     }
 }

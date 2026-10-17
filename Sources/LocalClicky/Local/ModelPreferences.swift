@@ -51,6 +51,7 @@ enum ModelPreferences {
         switch role {
         case .chat: return chatModel
         case .vision: return visionModel
+        case .grounding: return groundingModel
         }
     }
 
@@ -58,6 +59,7 @@ enum ModelPreferences {
         switch role {
         case .chat: chatModel = name
         case .vision: visionModel = name
+        case .grounding: groundingModel = name
         }
     }
 
