@@ -110,6 +110,8 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    /// The live ink trail drawn on every overlay while the keys are held.
+    let inkTrail = InkTrailModel()
 
     // MARK: - Local inference
 
@@ -956,6 +958,9 @@ final class CompanionManager: ObservableObject {
             }
         case .released:
             turnTimer?.mark(.keyUp)
+            // End the ink now rather than on the poll's next tick, so the hold
+            // and fade start at the release.
+            inkTrail.endStroke(finalPoint: NSEvent.mouseLocation)
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
