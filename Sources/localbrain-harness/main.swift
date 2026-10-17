@@ -899,6 +899,16 @@ func runSelfTest() -> Never {
           && inkTimerLine.contains("ink_ready") && inkTimerLine.contains("ax_ready")
           && TurnTimingRecord.allowedJSONKeys.isSuperset(of: ["ink_marks", "ink_crop"]))
 
+    let axOverlay = AccessibilityWindowInfo(pid: 100, bounds: CGRect(x: 0, y: 0, width: 1000, height: 800), layer: 1000)
+    let axApp = AccessibilityWindowInfo(pid: 200, bounds: CGRect(x: 0, y: 0, width: 500, height: 800), layer: 0)
+    check("ax target: our overlay is skipped, the app under it is picked",
+          AccessibilityTargetApp.owningPid(windows: [axOverlay, axApp], at: CGPoint(x: 100, y: 100), excludingPid: 100) == 200)
+    check("ax target: the frontmost app wins when it is not us, the window pick runs when it is",
+          AccessibilityTargetApp.targetPid(frontmostPid: 250, windows: [axApp], at: CGPoint(x: 1, y: 1), ownPid: 100) == 250
+          && AccessibilityTargetApp.targetPid(frontmostPid: 100, windows: [axOverlay, axApp], at: CGPoint(x: 1, y: 1), ownPid: 100) == 200)
+    check("ax target: no window at the point gives nil",
+          AccessibilityTargetApp.owningPid(windows: [axApp], at: CGPoint(x: 900, y: 700), excludingPid: 100) == nil)
+
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")
     check("OllamaClient talks only to localhost", OllamaClient().baseURL.host == "127.0.0.1")

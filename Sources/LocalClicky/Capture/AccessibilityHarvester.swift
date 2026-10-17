@@ -7,6 +7,10 @@
 //  points. It returns plain records; AccessibilitySummary (LocalBrainKit) turns
 //  them into the prompt text and drops secure fields.
 //
+//  The hit test is asked of one application (the frontmost one that is not us,
+//  else the owner of the topmost window at the ink centre); the system-wide
+//  element is only the fallback, because it can answer with our own overlay.
+//
 //  Runs off the main thread with a hard budget: when the budget is up the caller
 //  gets whatever was read so far, and a blocked Accessibility call cannot hold
 //  the turn. It never prompts for permission; without the Accessibility
@@ -48,28 +52,83 @@ enum AccessibilityHarvester {
     // MARK: - Probing
 
     private static func probe(_ points: [CGPoint], deadline: Date, collector: Collector) {
-        // No timeout is set on the system-wide element: that would change the
+        let ownProcess = ProcessInfo.processInfo.processIdentifier
+        var seen: [AXUIElement] = []
+
+        /// Reads one hit element once. The same element is hit by many grid
+        /// points. Our own overlay windows are not content.
+        func take(_ element: AXUIElement) {
+            if seen.contains(where: { CFEqual($0, element) }) { return }
+            seen.append(element)
+            var pid: pid_t = 0
+            if AXUIElementGetPid(element, &pid) == .success, pid == ownProcess { return }
+            AXUIElementSetMessagingTimeout(element, perCallTimeoutSeconds)
+            collector.append(record(for: element))
+        }
+
+        // Primary: ask one application. The system-wide hit test can answer
+        // with our own full-screen overlay windows, or with nothing at all.
+        if let application = targetApplicationElement(for: points, ownProcess: ownProcess) {
+            for point in points {
+                if Date() >= deadline { return }
+                var found: AXUIElement?
+                if AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &found) == .success,
+                   let element = found {
+                    take(element)
+                }
+            }
+            if !seen.isEmpty { return }
+        }
+
+        // Fallback: the system-wide element, only when the app-scoped probe
+        // found nothing. No timeout is set on it: that would change the
         // process-wide default for every other Accessibility call in the app.
         // The caller's budget bounds the wait instead.
         let systemWide = AXUIElementCreateSystemWide()
-        let ownProcess = ProcessInfo.processInfo.processIdentifier
-
-        var seen: [AXUIElement] = []
         for point in points {
             if Date() >= deadline { return }
             var found: AXUIElement?
             guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &found) == .success,
                   let element = found else { continue }
-            // The same element is hit by many grid points; read it once.
-            if seen.contains(where: { CFEqual($0, element) }) { continue }
-            seen.append(element)
+            take(element)
+        }
+    }
 
-            // Our own overlay windows are not content.
-            var pid: pid_t = 0
-            if AXUIElementGetPid(element, &pid) == .success, pid == ownProcess { continue }
+    /// The application element to probe: the frontmost application when it is
+    /// not us, otherwise the owner of the topmost on-screen window at the centre
+    /// of the probe points (AccessibilityTargetApp picks it from the window
+    /// list). The element gets the per-call timeout, so a hung app cannot hold
+    /// the hit test past the turn's budget.
+    private static func targetApplicationElement(for points: [CGPoint], ownProcess: pid_t) -> AXUIElement? {
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        var windows: [AccessibilityWindowInfo] = []
+        if frontmost == nil || frontmost == ownProcess, AccessibilityTargetApp.centre(of: points) != nil {
+            windows = onScreenWindows()
+        }
+        guard let centre = AccessibilityTargetApp.centre(of: points),
+              let pid = AccessibilityTargetApp.targetPid(frontmostPid: frontmost,
+                                                         windows: windows,
+                                                         at: centre,
+                                                         ownPid: ownProcess) else { return nil }
+        let application = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(application, perCallTimeoutSeconds)
+        return application
+    }
 
-            AXUIElementSetMessagingTimeout(element, perCallTimeoutSeconds)
-            collector.append(record(for: element))
+    /// The window server's on-screen windows, front to back, in Core Graphics
+    /// global coordinates.
+    private static func onScreenWindows() -> [AccessibilityWindowInfo] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+        return list.compactMap { entry in
+            guard let pid = entry[kCGWindowOwnerPID as String] as? Int32,
+                  let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary) else { return nil }
+            return AccessibilityWindowInfo(pid: pid,
+                                           bounds: bounds,
+                                           layer: entry[kCGWindowLayer as String] as? Int ?? 0,
+                                           alpha: entry[kCGWindowAlpha as String] as? Double ?? 1)
         }
     }
 
