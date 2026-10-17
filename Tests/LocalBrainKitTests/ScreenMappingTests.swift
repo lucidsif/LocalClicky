@@ -126,4 +126,47 @@ final class ScreenMappingTests: XCTestCase {
     func testDisplaySize() {
         XCTAssertEqual(primary.displaySizeInPoints, CGSize(width: 1512, height: 982))
     }
+
+    // MARK: - Display-local conversions (ink)
+
+    func testGlobalToDisplayLocalAndBack() {
+        for mapping in [primary, left, above] {
+            let global = mapping.globalPoint(forImagePoint: CGPoint(x: 300, y: 200))
+            let local = mapping.displayLocalPoint(forGlobalPoint: global)
+            assertPoint(local, mapping.displayLocalPoint(forImagePoint: CGPoint(x: 300, y: 200)))
+            assertPoint(mapping.globalPoint(forDisplayLocalPoint: local), global)
+        }
+    }
+
+    func testDisplayLocalFlipsYInsideTheDisplay() {
+        // Top-left of the left monitor in AppKit space is (-1920, 1080).
+        assertPoint(left.displayLocalPoint(forGlobalPoint: CGPoint(x: -1920, y: 1080)), .zero)
+        assertPoint(left.displayLocalPoint(forGlobalPoint: CGPoint(x: 0, y: 0)), CGPoint(x: 1920, y: 1080))
+    }
+
+    func testDisplayLocalIsNotClamped() {
+        // A point on the primary is off the left monitor's display.
+        let local = left.displayLocalPoint(forGlobalPoint: CGPoint(x: 100, y: 100))
+        XCTAssertGreaterThan(local.x, left.displaySizeInPoints.width)
+    }
+
+    func testCGGlobalPointOnThePrimaryDisplay() {
+        // Primary is 982 tall: its top-left is CG (0, 0), bottom-left CG (0, 982).
+        assertPoint(primary.cgGlobalPoint(forDisplayLocalPoint: .zero, primaryScreenHeight: 982), .zero)
+        assertPoint(primary.cgGlobalPoint(forDisplayLocalPoint: CGPoint(x: 10, y: 982), primaryScreenHeight: 982),
+                    CGPoint(x: 10, y: 982))
+    }
+
+    func testCGGlobalPointForADisplayAbovePrimaryIsNegative() {
+        // The monitor above the primary sits at CG y -982 ..< 0.
+        assertPoint(above.cgGlobalPoint(forDisplayLocalPoint: .zero, primaryScreenHeight: 982), CGPoint(x: 0, y: -982))
+        assertPoint(above.cgGlobalPoint(forDisplayLocalPoint: CGPoint(x: 5, y: 982), primaryScreenHeight: 982),
+                    CGPoint(x: 5, y: 0))
+    }
+
+    func testCGGlobalPointForADisplayLeftOfPrimary() {
+        // Left monitor (1080 tall, origin y 0) against a 982 tall primary: its
+        // top is AppKit y 1080, which is CG y 982 - 1080 = -98.
+        assertPoint(left.cgGlobalPoint(forDisplayLocalPoint: .zero, primaryScreenHeight: 982), CGPoint(x: -1920, y: -98))
+    }
 }

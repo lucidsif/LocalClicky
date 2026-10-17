@@ -100,6 +100,7 @@ final class TurnTimerTests: XCTestCase {
         timer.setImageSize(width: 1, height: 1)
         timer.setPointParsed(false)
         timer.setScreenshotCapturedAtPress(false)
+        timer.setInk(marks: 2, crop: true)
         for stage in TurnStage.allCases { clock.advance(milliseconds: 1); timer.mark(stage) }
         let line = timer.snapshot(outcome: "completed").jsonLine()
         let object = try XCTUnwrap(
@@ -118,7 +119,25 @@ final class TurnTimerTests: XCTestCase {
         XCTAssertNil(object["model"])
         XCTAssertNil(object["image_width"])
         XCTAssertNil(object["screenshot_at_press"])
+        XCTAssertNil(object["ink_marks"])
+        XCTAssertNil(object["ink_crop"])
         XCTAssertEqual(object["point_parsed"] as? Bool, false)
+    }
+
+    func testInkFieldsAreCountsAndFlagsOnly() throws {
+        let clock = FakeClock(0)
+        let timer = makeTimer(clock)
+        timer.setInk(marks: 3, crop: false)
+        clock.advance(milliseconds: 40); timer.mark(.inkReady)
+        clock.advance(milliseconds: 90); timer.mark(.axReady)
+        let line = timer.snapshot(outcome: "completed").jsonLine()
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        XCTAssertEqual(object["ink_marks"] as? Int, 3)
+        XCTAssertEqual(object["ink_crop"] as? Bool, false)
+        let stages = try XCTUnwrap(object["stages_ms"] as? [String: Double])
+        XCTAssertEqual(stages["ink_ready"], 40)
+        XCTAssertEqual(stages["ax_ready"], 130)
     }
 
     func testLogAppendsOneLinePerRecord() throws {

@@ -77,6 +77,7 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 | `Sources/LocalBrainKit/PointingTag.swift` | Parses `[POINT:…]` / bounding boxes → a single center point. |
 | `Sources/LocalBrainKit/LocalPrompts.swift` | System prompts (with LocalClicky identity) for screen / text / onboarding. |
 | `Sources/LocalBrainKit/ConversationRouter.swift` | Per‑turn routing: clipboard / app‑launch / browser command vs screen vs text. |
+| `Sources/LocalBrainKit/Ink*.swift`, `ScreenMapping.swift`, `GestureSummary.swift`, `AccessibilitySummary.swift` | Ink in, all pure and unit‑tested: `InkPalette` (presets and the resolved three‑pass style, timings, cursor outline), `InkStroke` (jiggle, dwells, marks), `InkTurn` (analyse + composite + close‑up), `InkRouting` (ink forces a screen turn), `InkAccessibilityGrid` (AX probe points), `ScreenMapping` (pixel / display / global / CG spaces). |
 | `Sources/LocalBrainKit/SpokenTextSegmenter.swift` | Splits a streaming answer into speakable sentences (skips the `[POINT]` tag). |
 | `Sources/LocalBrainKit/BrowserCommandPlanner.swift` | Maps a spoken command → concrete browser URLs (known‑site table, Gmail compose). |
 | `Sources/LocalBrainKit/AppCommandPlanner.swift` | Pure NL → app‑name extraction + deterministic install‑name matching (used by the launcher and unit‑tested). |
@@ -94,9 +95,11 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 | `Sources/LocalClicky/Local/AppleSpeechSynthesisClient.swift` | Fallback on‑device TTS. |
 | `Sources/LocalClicky/Browser/BrowserActionExecutor.swift` | Opens planned URLs in the default browser (navigation only). |
 | `Sources/LocalClicky/Voice/*` | Push‑to‑talk + Apple Speech STT pipeline. |
-| `Sources/LocalClicky/Overlay/OverlayWindow.swift` | Blue cursor overlay (the signature feature). |
+| `Sources/LocalClicky/Overlay/OverlayWindow.swift` | Blue cursor overlay (the signature feature), with the cursor outline. |
+| `Sources/LocalClicky/Overlay/InkTrailModel.swift` | Live ink: samples the overlay's 16 ms poll while the keys are held (no event tap), draws per screen, holds 1.5 s then fades the group. |
 | `Sources/LocalClicky/Panel/*` | Menu‑bar panel UI. |
 | `Sources/LocalClicky/Capture/CompanionScreenCaptureUtility.swift` | ScreenCaptureKit screenshots. |
+| `Sources/LocalClicky/Capture/InkTurnPreparer.swift`, `AccessibilityHarvester.swift` | At key up: composite the ink onto the press‑time JPEG, cut the close‑up, harvest AX elements under the ink (200 ms budget, off main). |
 | `Sources/localbrain-harness/main.swift` | Headless end‑to‑end verification CLI. |
 
 ## Build & verify

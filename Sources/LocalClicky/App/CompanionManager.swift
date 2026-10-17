@@ -171,6 +171,12 @@ final class CompanionManager: ObservableObject {
     }
     private var pressCapture: PressCapture?
 
+    /// The user's ink prepared for this turn (analysis, composite, close-up and
+    /// Accessibility harvest). Started at key up so it overlaps the transcript
+    /// finalising; the transcript handler claims it, and a press that ends with
+    /// no transcript, or a newer press, discards it. Only in memory.
+    private var pendingInkTask: Task<InkTurnPackage?, Never>?
+
     /// Pointing state for one response, touched only on the main actor. It lets
     /// the stream-end path know whether the cursor already left early, and stops
     /// a late early-dispatch from running after the final parse took over.
@@ -960,7 +966,8 @@ final class CompanionManager: ObservableObject {
             turnTimer?.mark(.keyUp)
             // End the ink now rather than on the poll's next tick, so the hold
             // and fade start at the release.
-            inkTrail.endStroke(finalPoint: NSEvent.mouseLocation)
+            let inkSamples = inkTrail.endStroke(finalPoint: NSEvent.mouseLocation)
+            startInkPreparation(samples: inkSamples)
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -994,6 +1001,29 @@ final class CompanionManager: ObservableObject {
     private func discardPressCapture() {
         pressCapture?.task.cancel()
         pressCapture = nil
+        pendingInkTask?.cancel()
+        pendingInkTask = nil
+    }
+
+    /// At key up: if the user drew something real on the display the press
+    /// capture is of, start preparing it for the turn. A jiggle, a press with no
+    /// capture, or a capture too old to reuse (the turn takes a fresh one, so the
+    /// ink would no longer match it) means no ink goes to the model; the live
+    /// trail still fades on screen.
+    private func startInkPreparation(samples: [InkSample]) {
+        pendingInkTask?.cancel()
+        pendingInkTask = nil
+        guard let press = pressCapture, !InkStroke(samples: samples).isJiggle else { return }
+        let ageSeconds = Double(DispatchTime.now().uptimeNanoseconds - press.startedAtNanoseconds) / 1_000_000_000
+        guard PressCapturePolicy.shouldReuse(ageSeconds: ageSeconds) else { return }
+
+        let captureTask = press.task
+        let timer = turnTimer
+        pendingInkTask = Task { [weak self] in
+            guard let self, let capture = await captureTask.value else { return nil }
+            return await InkTurnPreparer.prepare(samples: samples, capture: capture,
+                                                 trail: self.inkTrail, timer: timer)
+        }
     }
 
     /// The screenshot for a screen turn: the key-press capture when it is
@@ -1087,6 +1117,8 @@ final class CompanionManager: ObservableObject {
         let timer = turnTimer
         let claimedPressCapture = pressCapture
         pressCapture = nil
+        let claimedInk = pendingInkTask
+        pendingInkTask = nil
         currentResponseTask = Task {
             voiceState = .processing
             var turnOutcome = "completed"
@@ -1103,14 +1135,20 @@ final class CompanionManager: ObservableObject {
                 // command, so a self-contained follow-up ("add two to that")
                 // doesn't trigger a screenshot + screen-grounded prompt the way
                 // it used to. Browser commands are handled before any capture.
-                let route = ConversationRouter.route(
+                //
+                // Ink first: a stroke the user drew while holding the keys makes
+                // this a screen turn whatever the words say (see InkRouting). The
+                // package was started at key up, so this usually returns at once.
+                let inkPackage = await claimedInk?.value
+                let route = InkRouting.route(
                     transcript: transcript,
                     context: ConversationRouter.Context(
                         visionModeSelected: !isTextOnlyMode,
                         screenAvailable: hasScreenRecordingPermission,
                         previousTurnUsedScreen: previousTurnUsedScreen,
                         hasConversationHistory: !conversationHistory.isEmpty
-                    )
+                    ),
+                    hasUsableInk: inkPackage != nil
                 )
 
                 timer?.setRoute(String(describing: route))
@@ -1166,12 +1204,31 @@ final class CompanionManager: ObservableObject {
                 let model: String
 
                 if !useScreen { claimedPressCapture?.task.cancel() }
-                let screenCapture = useScreen
-                    ? await screenCaptureForTurn(claimed: claimedPressCapture, timer: timer)
-                    : nil
+                // With ink, the turn's screenshot is the press-time capture with
+                // the stroke composited into it (same size and mapping).
+                let usableInk = useScreen ? inkPackage : nil
+                let screenCapture: CompanionScreenCapture?
+                if let usableInk {
+                    timer?.setScreenshotCapturedAtPress(true)
+                    screenCapture = usableInk.capture
+                } else if useScreen {
+                    screenCapture = await screenCaptureForTurn(claimed: claimedPressCapture, timer: timer)
+                } else {
+                    screenCapture = nil
+                }
+                var inkCloseUpAttached = false
                 if let capture = screenCapture {
                     cursorScreenCapture = capture
                     userImagesBase64 = [capture.imageData.base64EncodedString()]
+                    // Describe turns also get the close-up. Pointing and clicking
+                    // turns must not: their coordinates refer to the full image.
+                    if let usableInk, !wantsPointing, let closeUp = usableInk.cropImageData {
+                        userImagesBase64.append(closeUp.base64EncodedString())
+                        inkCloseUpAttached = true
+                    }
+                    if let usableInk {
+                        timer?.setInk(marks: usableInk.markCount, crop: inkCloseUpAttached)
+                    }
                     if wantsPointing {
                         // Pointing turn: use the grounding model + the pointing
                         // prompt. If the resolved model can't ground (grounding
@@ -1227,7 +1284,17 @@ final class CompanionManager: ObservableObject {
                     messages.append(.user(exchange.userTranscript))
                     messages.append(.assistant(exchange.assistantResponse))
                 }
-                messages.append(.user(transcript, imagesBase64: userImagesBase64))
+                // The ink text rides after the user's words, so every system
+                // prompt stays exactly as it is on a turn with no ink.
+                var userText = transcript
+                if let usableInk {
+                    userText += "\n\n" + LocalPrompts.inkAddendum(
+                        gestureSummary: usableInk.gestureSummary,
+                        markerColourName: usableInk.markerColourName,
+                        hasCloseUp: inkCloseUpAttached,
+                        accessibilityBlock: usableInk.accessibilityBlock)
+                }
+                messages.append(.user(userText, imagesBase64: userImagesBase64))
 
                 // Stream the answer and speak it sentence-by-sentence as it
                 // arrives, so the companion starts talking before the whole

@@ -91,6 +91,30 @@ public struct ScreenMapping: Equatable, Sendable {
         displayLocalPoint(forImagePoint: point)
     }
 
+    /// Global AppKit point to display-local point (top-left origin, per
+    /// screen). Not clamped: a point on another monitor lands outside the
+    /// display, so check `containsGlobalPoint` first when that matters.
+    public func displayLocalPoint(forGlobalPoint point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x - displayFrame.origin.x,
+                y: displayHeight - (point.y - displayFrame.origin.y))
+    }
+
+    /// Display-local point (top-left origin) to global AppKit point.
+    public func globalPoint(forDisplayLocalPoint point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x + displayFrame.origin.x,
+                y: (displayHeight - point.y) + displayFrame.origin.y)
+    }
+
+    /// Display-local point to Core Graphics global coordinates: origin at the
+    /// top-left of the primary display, y growing downward. This is the space
+    /// the Accessibility hit test and CGEvent use. `primaryScreenHeight` is the
+    /// primary display's height in points; the flip is anchored on it, which is
+    /// correct for displays above, below or beside the primary one.
+    public func cgGlobalPoint(forDisplayLocalPoint point: CGPoint, primaryScreenHeight: CGFloat) -> CGPoint {
+        let appKit = globalPoint(forDisplayLocalPoint: point)
+        return CGPoint(x: appKit.x, y: primaryScreenHeight - appKit.y)
+    }
+
     /// Whether a global AppKit point falls on this display.
     public func containsGlobalPoint(_ point: CGPoint) -> Bool {
         displayFrame.contains(point)

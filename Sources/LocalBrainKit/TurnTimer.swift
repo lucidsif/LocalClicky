@@ -32,6 +32,10 @@ public enum TurnStage: String, CaseIterable, Sendable {
     case firstAudio = "first_audio"
     case tagParsed = "tag_parsed"
     case cursorArrival = "cursor_arrival"
+    /// The ink is composited onto the screenshot and the close-up is cut.
+    case inkReady = "ink_ready"
+    /// The Accessibility harvest for the marked area finished (or hit its budget).
+    case axReady = "ax_ready"
 }
 
 /// An immutable snapshot of one finished (or abandoned) turn.
@@ -50,6 +54,10 @@ public struct TurnTimingRecord: Equatable, Sendable {
     /// True when the screenshot used by this turn was captured at key press
     /// rather than after the transcript.
     public var screenshotCapturedAtPress: Bool?
+    /// How many marks the user's ink had. Nil on a turn with no ink.
+    public var inkMarks: Int?
+    /// True when the close-up crop was sent as a second image. Nil on a turn with no ink.
+    public var inkCrop: Bool?
     /// "completed", "interrupted", or "error".
     public var outcome: String
 
@@ -69,7 +77,7 @@ public struct TurnTimingRecord: Equatable, Sendable {
     /// field (and above all a text field) is a deliberate, reviewed change.
     public static let allowedJSONKeys: Set<String> = [
         "turn_id", "started_at", "stages_ms", "route", "model", "image_width", "image_height",
-        "point_parsed", "screenshot_at_press", "outcome",
+        "point_parsed", "screenshot_at_press", "outcome", "ink_marks", "ink_crop",
         "release_to_first_audio_ms", "release_to_cursor_ms",
     ]
 
@@ -89,6 +97,8 @@ public struct TurnTimingRecord: Equatable, Sendable {
         if let imageWidth { object["image_width"] = imageWidth }
         if let imageHeight { object["image_height"] = imageHeight }
         if let screenshotCapturedAtPress { object["screenshot_at_press"] = screenshotCapturedAtPress }
+        if let inkMarks { object["ink_marks"] = inkMarks }
+        if let inkCrop { object["ink_crop"] = inkCrop }
         if let value = releaseToFirstAudioMilliseconds { object["release_to_first_audio_ms"] = Self.rounded(value) }
         if let value = releaseToCursorMilliseconds { object["release_to_cursor_ms"] = Self.rounded(value) }
 
@@ -115,6 +125,8 @@ public final class TurnTimer: @unchecked Sendable {
     private var imageHeight: Int?
     private var pointParsed = false
     private var screenshotCapturedAtPress: Bool?
+    private var inkMarks: Int?
+    private var inkCrop: Bool?
 
     /// - Parameters:
     ///   - now: monotonic nanoseconds. Injected so tests use fixed numbers.
@@ -170,6 +182,13 @@ public final class TurnTimer: @unchecked Sendable {
         screenshotCapturedAtPress = atPress
     }
 
+    /// Counts only: how many marks, and whether the close-up went along.
+    public func setInk(marks: Int, crop: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        inkMarks = marks
+        inkCrop = crop
+    }
+
     public func snapshot(outcome: String) -> TurnTimingRecord {
         lock.lock(); defer { lock.unlock() }
         var offsets: [TurnStage: Double] = [:]
@@ -189,6 +208,8 @@ public final class TurnTimer: @unchecked Sendable {
             imageHeight: imageHeight,
             pointParsed: pointParsed,
             screenshotCapturedAtPress: screenshotCapturedAtPress,
+            inkMarks: inkMarks,
+            inkCrop: inkCrop,
             outcome: outcome
         )
     }

@@ -840,6 +840,65 @@ func runSelfTest() -> Never {
           InkPalette.resolve(preset: .highVisibility, increaseContrast: false, differentiateWithoutColor: false,
                              reduceMotion: false).assistantDashed)
 
+    // --- Ink to the model: routing, grid, turn analysis, prompt, timer ---
+    func inkRoute(_ s: String, ink: Bool = true, vision: Bool = true) -> ConversationRoute {
+        InkRouting.route(transcript: s, context: ctx(vision: vision), hasUsableInk: ink)
+    }
+    check("ink route: a question with ink is a describe turn", inkRoute("what is this") == .screen)
+    check("ink route: ink beats an app keyword", inkRoute("open youtube") == .screen)
+    check("ink route: pointing words still point", inkRoute("where do i click to save") == .screenPoint)
+    check("ink route: click words still click", inkRoute("click the button i circled") == .screenClick)
+    check("ink route: no ink leaves the router alone", inkRoute("open youtube", ink: false) == route("open youtube", ctx()))
+    check("ink route: no vision, no ink route", inkRoute("what is this", vision: false) == route("what is this", ctx(vision: false)))
+
+    let inkGrid = InkAccessibilityGrid.probePoints(in: CGRect(x: 0, y: 0, width: 60, height: 120),
+                                                   extraPoints: [CGPoint(x: 7, y: 8)])
+    check("ink grid: 6x6 cell centres plus the extras",
+          inkGrid.count == 37 && inkGrid[0] == CGPoint(x: 5, y: 10) && inkGrid.last == CGPoint(x: 7, y: 8))
+
+    let inkAbove = ScreenMapping(displayFrame: CGRect(x: 0, y: 982, width: 1512, height: 982),
+                                 displayWidthInPoints: 1512, displayHeightInPoints: 982,
+                                 screenshotWidthInPixels: 1152, screenshotHeightInPixels: 748)
+    check("mapping: CG point for a display above the primary is negative",
+          inkAbove.cgGlobalPoint(forDisplayLocalPoint: .zero, primaryScreenHeight: 982) == CGPoint(x: 0, y: -982))
+
+    let inkTurnMap = ScreenMapping(displayFrame: CGRect(x: 0, y: 0, width: 1000, height: 600),
+                                   displayWidthInPoints: 1000, displayHeightInPoints: 600,
+                                   screenshotWidthInPixels: 500, screenshotHeightInPixels: 300)
+    let inkRing = (0...48).map { step -> InkSample in
+        let angle = 2 * Double.pi * Double(step) / 48
+        return InkSample(point: CGPoint(x: 400 + 80 * cos(angle), y: 300 + 80 * sin(angle)), time: Double(step) * 0.016)
+    }
+    if let inkTurn = InkTurn.analyze(globalSamples: inkRing, mapping: inkTurnMap) {
+        check("ink turn: circle worded and mapped to pixels",
+              inkTurn.gestureSummary == "The user drew 1 mark while speaking: circled an area in the center."
+              && abs(inkTurn.boundsInImagePixels.midX - 200) < 1 && abs(inkTurn.boundsInImagePixels.midY - 150) < 1)
+    } else {
+        check("ink turn: circle analysed", false)
+    }
+    check("ink turn: a jiggle gives no ink",
+          InkTurn.analyze(globalSamples: (0..<6).map { InkSample(point: CGPoint(x: 300 + Double($0 % 2) * 3, y: 300), time: Double($0) * 0.02) },
+                          mapping: inkTurnMap) == nil)
+
+    let inkPrompt = LocalPrompts.inkAddendum(gestureSummary: "The user drew 1 mark while speaking: circled an area in the center.",
+                                             markerColourName: "yellow", hasCloseUp: true,
+                                             accessibilityBlock: "Elements inside the circled area, in reading order:\n- button \"Save\"")
+    check("ink prompt: marker, summary, close-up line and element block",
+          inkPrompt.contains("a yellow marker") && inkPrompt.contains("circled an area in the center")
+          && inkPrompt.contains("second image is a close-up") && inkPrompt.hasSuffix("- button \"Save\""))
+    check("ink prompt: no close-up line on a pointing turn",
+          !LocalPrompts.inkAddendum(gestureSummary: "x", markerColourName: "red", hasCloseUp: false).contains("second image"))
+
+    let inkTimer = TurnTimer()
+    inkTimer.setInk(marks: 2, crop: true)
+    inkTimer.mark(.inkReady)
+    inkTimer.mark(.axReady)
+    let inkTimerLine = inkTimer.snapshot(outcome: "completed").jsonLine()
+    check("turn timer: ink counts and stages are recorded, keys stay allowed",
+          inkTimerLine.contains("\"ink_marks\":2") && inkTimerLine.contains("\"ink_crop\":true")
+          && inkTimerLine.contains("ink_ready") && inkTimerLine.contains("ax_ready")
+          && TurnTimingRecord.allowedJSONKeys.isSuperset(of: ["ink_marks", "ink_crop"]))
+
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")
     check("OllamaClient talks only to localhost", OllamaClient().baseURL.host == "127.0.0.1")

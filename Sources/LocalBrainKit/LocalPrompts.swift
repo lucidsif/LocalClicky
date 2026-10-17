@@ -98,6 +98,25 @@ public enum LocalPrompts {
         """
     }
 
+    /// Extra text for a turn where the user drew on the screen while speaking.
+    /// It goes after the user's words, so the system prompts above stay exactly
+    /// as they are on every turn without ink. One sentence says the user marked
+    /// the area and to answer about it; then the gesture summary; then, on a
+    /// describe turn that carries the close-up, a line about the second image;
+    /// then the Accessibility block for the marked area when there is one.
+    public static func inkAddendum(gestureSummary: String,
+                                   markerColourName: String,
+                                   hasCloseUp: Bool,
+                                   accessibilityBlock: String = "") -> String {
+        var parts = ["the user drew on the screen with a \(markerColourName) marker while speaking, so they are marking an area on purpose. answer about the marked area."]
+        let summary = gestureSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !summary.isEmpty { parts.append(summary) }
+        if hasCloseUp { parts.append("the second image is a close-up of the marked area.") }
+        let elements = accessibilityBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !elements.isEmpty { parts.append(elements) }
+        return parts.joined(separator: "\n")
+    }
+
     /// Text-only prompt for the fast chat model, used when there's no useful
     /// screen context. Mirrors the screen prompt's voice but tells the model it
     /// can't see the screen this turn and to lean on conversation history — which
