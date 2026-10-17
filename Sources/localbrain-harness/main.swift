@@ -405,6 +405,20 @@ func runBenchmarkSuite(imagePath: String, iterations: Int, label: String) async 
     print("\n📊 wrote \(jsonPath)\n📊 wrote \(mdPath)")
 }
 
+/// A flat-grey JPEG for the ink-image self-test checks.
+func inkJPEG(width: Int, height: Int) -> Data? {
+    guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+          let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+    context.setFillColor(CGColor(gray: 0.5, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    guard let image = context.makeImage() else { return nil }
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(destination, image, nil)
+    return CGImageDestinationFinalize(destination) ? data as Data : nil
+}
+
 /// Dependency-free assertion runner so the pointing-tag parser can be verified
 /// on a Command-Line-Tools-only machine (XCTest needs full Xcode).
 func runSelfTest() -> Never {
@@ -719,6 +733,91 @@ func runSelfTest() -> Never {
     check("pull parse: error surfaced", pp3 == nil && pe3 == "model 'nope' not found")
     let (pp4, _) = OllamaClient.parsePullLine("   ")
     check("pull parse: blank line ignored", pp4 == nil)
+
+    // --- Ink in/out: mapping, strokes, summary, image, accessibility, shape tags ---
+    let inkMap = ScreenMapping(displayFrame: CGRect(x: -1920, y: 0, width: 1920, height: 1080),
+                               displayWidthInPoints: 1920, displayHeightInPoints: 1080,
+                               screenshotWidthInPixels: 1280, screenshotHeightInPixels: 720)
+    check("mapping: forward top-left pixel → AppKit top-left of a left monitor",
+          inkMap.globalPoint(forImagePoint: .zero) == CGPoint(x: -1920, y: 1080))
+    let inkRound = inkMap.imagePoint(forGlobalPoint: inkMap.globalPoint(forImagePoint: CGPoint(x: 321, y: 123)))
+    check("mapping: image → global → image round trip",
+          abs(inkRound.x - 321) < 1e-9 && abs(inkRound.y - 123) < 1e-9)
+    check("mapping: overlay point → pixel",
+          inkMap.imagePoint(forOverlayPoint: CGPoint(x: 960, y: 540)) == CGPoint(x: 640, y: 360))
+
+    func inkCircle(_ degrees: Double) -> [InkSample] {
+        (0...48).map { step in
+            let angle = degrees * Double.pi / 180 * Double(step) / 48
+            return InkSample(point: CGPoint(x: 500 + 80 * cos(angle), y: 400 + 80 * sin(angle)), time: Double(step) * 0.016)
+        }
+    }
+    check("ink: full circle classified as circle", InkStroke(samples: inkCircle(360)).marks().map(\.kind) == [.circle])
+    check("ink: half circle is not a circle", InkStroke(samples: inkCircle(180)).marks().first?.kind != .circle)
+    let inkLine = (0...20).map { InkSample(point: CGPoint(x: 100 + Double($0) * 15, y: 200), time: Double($0) * 0.016) }
+    check("ink: straight run classified as line", InkStroke(samples: inkLine).marks().map(\.kind) == [.line])
+    let inkJiggle = (0..<6).map { InkSample(point: CGPoint(x: 300 + Double($0 % 2) * 3, y: 300), time: Double($0) * 0.02) }
+    check("ink: jiggle is rejected", InkStroke(samples: inkJiggle).analyze().isEmpty)
+    let inkHeld = inkLine + (1...20).map { InkSample(point: CGPoint(x: 400 + Double($0 % 2), y: 200), time: 0.4 + Double($0) * 0.05) }
+    check("ink: a 1 s hold is a dwell", InkStroke(samples: inkHeld).dwells().count == 1)
+    check("ink: region grid names",
+          InkRegion.name(for: CGPoint(x: 10, y: 10), in: CGSize(width: 900, height: 600)) == "top left"
+          && InkRegion.name(for: CGPoint(x: 450, y: 300), in: CGSize(width: 900, height: 600)) == "center"
+          && InkRegion.name(for: CGPoint(x: 890, y: 590), in: CGSize(width: 900, height: 600)) == "bottom right")
+    let inkSummary = GestureSummary.describe(InkStroke(samples: inkCircle(360)).analyze(), screenSize: CGSize(width: 1200, height: 900))
+    check("gesture summary: one circle in the center",
+          inkSummary == "The user drew 1 mark while speaking: circled an area in the center.")
+
+    if let base = inkJPEG(width: 200, height: 120),
+       let inked = InkImage.compositeInk(jpegData: base,
+                                         strokesInImagePixels: [[CGPoint(x: 20, y: 60), CGPoint(x: 180, y: 60)]],
+                                         style: .provisional) {
+        let inkedImage = CGImageSourceCreateWithData(inked as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+        check("ink image: composite keeps the pixel size", inkedImage?.width == 200 && inkedImage?.height == 120)
+        check("ink image: crop returns a rect inside the image",
+              InkImage.cropAround(jpegData: base, rectInImagePixels: CGRect(x: 90, y: 50, width: 10, height: 10),
+                                  padding: 0.2, minSide: 64, maxLongEdge: 512)?.rectInImagePixels
+                == CGRect(x: 63, y: 23, width: 64, height: 64))
+    } else {
+        check("ink image: synthetic JPEG composite worked", false)
+    }
+    check("ink image: crop rect clamps near a corner",
+          InkImage.cropRect(forInkBounds: CGRect(x: 0, y: 0, width: 10, height: 10),
+                            imageSize: CGSize(width: 1152, height: 748), padding: 0.2, minSide: 320)
+            == CGRect(x: 0, y: 0, width: 320, height: 320))
+
+    let axText = AccessibilitySummary.summarize([
+        AccessibilityElementRecord(role: "AXTextField", title: "Password", value: "hunter2", isSecure: true,
+                                   frame: CGRect(x: 0, y: 0, width: 50, height: 20)),
+        AccessibilityElementRecord(role: "AXButton", title: "Save", frame: CGRect(x: 0, y: 40, width: 50, height: 20)),
+        AccessibilityElementRecord(role: "AXButton", title: "Save", frame: CGRect(x: 90, y: 40, width: 50, height: 20)),
+    ])
+    check("accessibility: secure field dropped, duplicates merged",
+          !axText.contains("hunter2") && !axText.contains("Password") && axText.components(separatedBy: "\"Save\"").count == 2)
+
+    let shapeResult = ShapeTagParser.parse(from: "[SHAPE:circle:500,400;560,400:save:screen2] That is the save button. [HIGHLIGHT:1,2,30,40:form] [POINT:7,8:x]")
+    check("shape tag: circle parsed with label and screen",
+          shapeResult.shapes.first?.kind == .circle && shapeResult.shapes.first?.label == "save"
+          && shapeResult.shapes.first?.screenNumber == 2)
+    check("shape tag: highlight parsed", shapeResult.highlights.first?.rect == CGRect(x: 1, y: 2, width: 29, height: 38))
+    check("shape tag: all tags stripped from speech", shapeResult.spokenText == "That is the save button.")
+    check("shape tag: wrong point count is dropped", ShapeTagParser.parseTag("[SHAPE:line:1,2;3,4;5,6:x]") == nil)
+    check("shape tag: curve needs 3 to 16 points", ShapeTagParser.parseTag("[SHAPE:curve:1,2;3,4:x]") == nil
+          && ShapeTagParser.parseTag("[SHAPE:curve:1,2;3,4;5,6:x]") != nil)
+    let shapeDetector = StreamingShapeDetector()
+    check("shape detector: silent until the tag closes",
+          shapeDetector.feed(accumulated: "look [SHAPE:line:1,2;3,4:a").isEmpty)
+    check("shape detector: fires once on close",
+          shapeDetector.feed(accumulated: "look [SHAPE:line:1,2;3,4:a]").count == 1
+          && shapeDetector.feed(accumulated: "look [SHAPE:line:1,2;3,4:a] more").isEmpty)
+    check("segmenter: tag-first line speaks the sentence",
+          SpokenTextSegmenter.speakablePrefix("[SHAPE:circle:1,2;3,4:x] That is the save button.") == "That is the save button.")
+    check("segmenter: holds back an unclosed trailing fragment",
+          SpokenTextSegmenter.speakablePrefix("it is here. [SHAPE:circle:1,") == "it is here. ")
+    check("segmenter: skips mid-text tags",
+          SpokenTextSegmenter.speakablePrefix("a [POINT:1,2:x] b") == "a b")
+    check("pointing tag: spoken text drops SHAPE and HIGHLIGHT",
+          PointingTagParser.parse(from: "ok [SHAPE:line:1,2;3,4] [HIGHLIGHT:1,2,3,4] [POINT:5,6:x]").spokenText == "ok")
 
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")
