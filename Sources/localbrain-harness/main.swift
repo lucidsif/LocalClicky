@@ -909,6 +909,28 @@ func runSelfTest() -> Never {
     check("ax target: no window at the point gives nil",
           AccessibilityTargetApp.owningPid(windows: [axApp], at: CGPoint(x: 900, y: 700), excludingPid: 100) == nil)
 
+    let drawCtx = ConversationRouter.Context(visionModeSelected: true, screenAvailable: true,
+                                             previousTurnUsedScreen: false, hasConversationHistory: false)
+    func drawRoute(_ words: String, enabled: Bool = true) -> ConversationRoute {
+        DrawingRouting.route(transcript: words, context: drawCtx, hasUsableInk: false, drawingEnabled: enabled)
+    }
+    check("draw route: circle, highlight and show-me-where draw when enabled",
+          drawRoute("circle the save button") == .screenDraw && drawRoute("highlight the total") == .screenDraw
+          && drawRoute("show me where the settings are") == .screenDraw)
+    check("draw route: ordinary words do not trigger", !DrawingIntent.wantsDrawing("what is a bookmark")
+          && !DrawingIntent.wantsDrawing("open the drawer") && !DrawingIntent.wantsDrawing("mark it as read"))
+    check("draw route: a click command wins, an action route is kept",
+          DrawingRouting.route(transcript: "click the button i circled", context: drawCtx, hasUsableInk: true, drawingEnabled: true) == .screenClick
+          && drawRoute("set a timer for 4 minutes and mark it") == .setTimer)
+    check("draw route: disabled changes nothing (highlight still points)",
+          drawRoute("highlight the total", enabled: false) == .screenPoint
+          && drawRoute("circle the save button", enabled: false)
+              == InkRouting.route(transcript: "circle the save button", context: drawCtx, hasUsableInk: false))
+    let drawPrompt = LocalPrompts.screenDrawResponse(imageWidthInPixels: 1152, imageHeightInPixels: 748)
+    check("draw prompt: size, both tag forms, ring rule, spoken parity",
+          drawPrompt.contains("1152x748") && drawPrompt.contains("[SHAPE:") && drawPrompt.contains("[HIGHLIGHT:")
+          && drawPrompt.contains("just outside the thing") && drawPrompt.contains("say what the mark is on"))
+
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")
     check("OllamaClient talks only to localhost", OllamaClient().baseURL.host == "127.0.0.1")

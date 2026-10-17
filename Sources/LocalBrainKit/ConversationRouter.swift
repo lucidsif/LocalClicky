@@ -36,6 +36,11 @@ public enum ConversationRoute: Equatable, Sendable {
     /// actually click it** — the user told LocalClicky to click/press something
     /// ("click the submit button"), not just to show where it is.
     case screenClick
+    /// Capture the screen and *draw* on it: the user asked the assistant to
+    /// circle, outline, underline, highlight or mark something. Only produced by
+    /// DrawingRouting, and only while the drawing setting is on. Routed to the
+    /// grounding model with the shape prompt.
+    case screenDraw
     case text
     case browserCommand
     /// Open / launch a local macOS application ("launch spotify", "open the

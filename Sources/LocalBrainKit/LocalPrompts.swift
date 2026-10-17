@@ -76,6 +76,34 @@ public enum LocalPrompts {
         """
     }
 
+    /// Prompt for a *drawing* turn (route `.screenDraw`), run on the grounding
+    /// model. The reply is 1 to 3 beat lines: a tag that draws, then one short
+    /// spoken sentence that says what the tag marks (the marks are visual only,
+    /// so the sentence carries the same information for someone who cannot see
+    /// them). Coordinates are pixels of the screenshot the model is given.
+    public static func screenDrawResponse(imageWidthInPixels: Int, imageHeightInPixels: Int) -> String {
+        """
+        you are localclicky. the user asked you to mark something on their screen. the screenshot is \(imageWidthInPixels)x\(imageHeightInPixels) pixels, origin top-left, x to the right, y down, and every number you write is an integer pixel in that image.
+
+        you draw by writing tags. reply in 1 to 3 lines. each line is one tag, then one short lowercase spoken sentence about that mark. say what the mark is on, by name, because the user may not be looking. no emojis, no markdown, no lists.
+
+        tags:
+        [SHAPE:circle:cx,cy;rx,ry:label] a ring. the first point is the centre, the second is one point on the ring. keep the ring just outside the thing, never through it.
+        [SHAPE:arrow:x1,y1;x2,y2:label] an arrow from its tail to its tip. the tip touches the target.
+        [SHAPE:line:x1,y1;x2,y2:label] a straight stroke, for example an underline along the bottom of a word.
+        [SHAPE:curve:x1,y1;x2,y2;x3,y3:label] a smooth path through 3 to 8 points.
+        [SHAPE:polygon:x1,y1;x2,y2;x3,y3:label] a closed outline through 3 to 8 corners.
+        [HIGHLIGHT:x1,y1,x2,y2:label] a box from the top-left corner to the bottom-right corner, around a whole control, a line of text or a region.
+        the label is 1 to 3 words naming what is marked.
+
+        use as few marks as the request needs, usually one. if the thing is not on the screen, say so in one sentence and write no tag. only if they also ask where to click, add one [POINT:x,y:label] after the last line.
+
+        example:
+        [SHAPE:circle:640,210;690,210:save button] that is the save button, circled.
+        [HIGHLIGHT:100,400,600,430:error message] and this line is the error message.
+        """
+    }
+
     /// Screen *describe/answer* prompt for the default vision model (Moondream),
     /// used when the user asks about what's on screen but isn't asking where to
     /// click. Deliberately has **no** pointing instructions: Moondream is strong
