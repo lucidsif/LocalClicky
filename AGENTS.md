@@ -108,7 +108,7 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 scripts/bootstrap-ollama.sh        # ensure Ollama + models
 scripts/fetch-tts.sh               # vendor the neural TTS runtime + Piper voice (once)
 swift build                        # compile everything (CLT, no Xcode)
-swift run localbrain-harness --selftest          # ~90 checks: parser + router + advisor + prompts + safety
+swift run localbrain-harness --selftest          # 219 checks: parser + router + advisor + prompts + safety
 swift run localbrain-harness --advise            # hardware profile + recommended models (+ autotune if present)
 swift run localbrain-harness --models            # installed Ollama models + which role each can fill
 swift run localbrain-harness --e2e shot.png      # full pipeline vs real models (text/describe/point/joke)
