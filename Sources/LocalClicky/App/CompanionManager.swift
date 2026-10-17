@@ -1748,6 +1748,10 @@ final class CompanionManager: ObservableObject {
         voiceState = .idle
         clickGate.targetChanged()
         let globalLocation = globalScreenLocation(forImagePoint: center, in: capture)
+        // The bubble reads this when the cursor lands, so set it before the
+        // location. A label that is missing or too long leaves it nil and the
+        // overlay keeps its random phrase.
+        detectedElementBubbleText = PointingLabel.bubbleText(from: label)
         detectedElementScreenLocation = globalLocation
         detectedElementDisplayFrame = capture.displayFrame
         print("🎯 Pointing at \"\(label ?? "element")\" → (\(Int(center.x)), \(Int(center.y))) px")

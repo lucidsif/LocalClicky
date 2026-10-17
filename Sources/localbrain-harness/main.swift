@@ -819,6 +819,11 @@ func runSelfTest() -> Never {
     check("pointing tag: spoken text drops SHAPE and HIGHLIGHT",
           PointingTagParser.parse(from: "ok [SHAPE:line:1,2;3,4] [HIGHLIGHT:1,2,3,4] [POINT:5,6:x]").spokenText == "ok")
 
+    check("pointing label: trimmed and short passes", PointingLabel.bubbleText(from: "  save  button ") == "save button")
+    check("pointing label: none, empty and long are ignored",
+          PointingLabel.bubbleText(from: "none") == nil && PointingLabel.bubbleText(from: "") == nil
+          && PointingLabel.bubbleText(from: "the small gear shaped settings control") == nil)
+
     // --- Safety: inference is localhost-only (no cloud) ---
     check("default Ollama endpoint is localhost", LocalModels.defaultOllamaBaseURL.host == "127.0.0.1")
     check("OllamaClient talks only to localhost", OllamaClient().baseURL.host == "127.0.0.1")
