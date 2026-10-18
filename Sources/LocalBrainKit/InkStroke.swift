@@ -159,8 +159,21 @@ public struct InkStroke: Equatable, Sendable {
     // Thresholds. Public so tests and the app's debug text can refer to them.
     /// A stroke (or a mark) shorter than this is a twitch, not ink.
     public static let minimumPathLength: CGFloat = 30
-    public static let dwellMinimumDuration: Double = 0.6
+    /// A pause this long (inside `dwellRadius`) is reported as a dwell, so the
+    /// model hears "paused about 0.4 s on the button". Reporting only; a
+    /// pause this short does not cut the stroke.
+    public static let dwellReportDuration: Double = 0.35
+    /// A pause this long (inside `dwellRadius`) also ends one mark and starts
+    /// the next. Longer than `dwellReportDuration` on purpose: a brief hover
+    /// should not split a circle drawn at a leisurely pace.
+    public static let markSplitDuration: Double = 0.6
     public static let dwellRadius: CGFloat = 12
+    /// Live trail: nothing is drawn until the pointer is this far (points) from
+    /// where the stroke began.
+    public static let liveTrailThreshold: CGFloat = 8
+    /// Live trail: a new sample closer than this (points) to the last kept one
+    /// is dropped. Stationary-mouse ticks add nothing but noise.
+    public static let minimumSampleSpacing: CGFloat = 1.5
     /// End-to-start gap, as a fraction of the bounding-box diagonal, under
     /// which a mark counts as closed.
     public static let circleClosureFraction: CGFloat = 0.25
@@ -190,10 +203,20 @@ public struct InkStroke: Equatable, Sendable {
 
     // MARK: - Dwells
 
+    /// Whether a new live sample is worth keeping: always the first one, and
+    /// afterwards only when it is at least `minimumSampleSpacing` from the last
+    /// kept one. The closing sample at key up is always kept (`isFinal`), so a
+    /// pause at the very end still has an end time.
+    public static func shouldKeepSample(_ point: CGPoint, after lastKept: CGPoint?, isFinal: Bool = false) -> Bool {
+        guard let lastKept else { return true }
+        if isFinal { return true }
+        return InkGeometry.distance(point, lastKept) >= minimumSampleSpacing
+    }
+
     /// Pauses of at least `minimumDuration` seconds inside `radius` points of
     /// the pause's first sample. Does not apply jiggle rejection; `analyze()`
     /// does.
-    public func dwells(minimumDuration: Double = InkStroke.dwellMinimumDuration,
+    public func dwells(minimumDuration: Double = InkStroke.dwellReportDuration,
                        radius: CGFloat = InkStroke.dwellRadius) -> [InkDwell] {
         var result: [InkDwell] = []
         let count = samples.count
@@ -224,18 +247,23 @@ public struct InkStroke: Equatable, Sendable {
 
     // MARK: - Marks
 
-    /// The stroke split at its dwells into classified marks. Empty for a
-    /// jiggle. A piece shorter than `minimumPathLength` is dropped.
+    /// The stroke split at pauses of `markSplitDuration` or more into
+    /// classified marks. Empty for a jiggle. A piece shorter than
+    /// `minimumPathLength` is dropped.
     public func marks() -> [InkMark] {
         guard !isJiggle else { return [] }
-        return marks(splitAt: dwells())
+        return marks(splitAt: splitDwells())
     }
 
-    /// Dwells and marks together; `.empty` for a jiggle.
+    /// Dwells (reported at `dwellReportDuration`) and marks (split at
+    /// `markSplitDuration`) together; `.empty` for a jiggle.
     public func analyze() -> InkAnalysis {
         guard !isJiggle else { return .empty }
-        let found = dwells()
-        return InkAnalysis(marks: marks(splitAt: found), dwells: found)
+        return InkAnalysis(marks: marks(splitAt: splitDwells()), dwells: dwells())
+    }
+
+    private func splitDwells() -> [InkDwell] {
+        dwells(minimumDuration: Self.markSplitDuration)
     }
 
     private func marks(splitAt dwells: [InkDwell]) -> [InkMark] {

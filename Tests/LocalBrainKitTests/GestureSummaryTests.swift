@@ -25,7 +25,7 @@ final class GestureSummaryTests: XCTestCase {
             dwells: [dwell(at: CGPoint(x: 600, y: 450), seconds: 1.0)])
         XCTAssertEqual(GestureSummary.describe(analysis, screenSize: screen),
                        "The user drew 2 marks in order while speaking: 1) circled an area in the top right; "
-                       + "2) drew a line from the center toward the bottom; paused about 1 s in the center.")
+                       + "2) drew a line from the center toward the bottom; paused about 1.0 s in the center.")
     }
 
     func testSingleMarkWording() {
@@ -46,18 +46,27 @@ final class GestureSummaryTests: XCTestCase {
 
     func testDwellOnly() {
         let analysis = InkAnalysis(marks: [], dwells: [dwell(at: CGPoint(x: 600, y: 450), seconds: 2.4)])
-        XCTAssertEqual(GestureSummary.describe(analysis, screenSize: screen), "The user paused about 2 s in the center.")
+        XCTAssertEqual(GestureSummary.describe(analysis, screenSize: screen), "The user paused about 2.4 s in the center.")
     }
 
-    func testDwellSecondsRoundButNeverBelowOne() {
-        let analysis = InkAnalysis(marks: [], dwells: [dwell(at: CGPoint(x: 10, y: 10), seconds: 0.62)])
-        XCTAssertEqual(GestureSummary.describe(analysis, screenSize: screen), "The user paused about 1 s in the top left.")
+    func testDwellSecondsAreShownToOneDecimal() {
+        let analysis = InkAnalysis(marks: [], dwells: [dwell(at: CGPoint(x: 10, y: 10), seconds: 0.38)])
+        XCTAssertEqual(GestureSummary.describe(analysis, screenSize: screen), "The user paused about 0.4 s in the top left.")
+    }
+
+    func testOnlyTheTwoLongestDwellsAreListedInTimeOrder() {
+        let analysis = InkAnalysis(marks: [], dwells: [
+            dwell(at: CGPoint(x: 10, y: 10), seconds: 0.4),
+            dwell(at: CGPoint(x: 600, y: 450), seconds: 2.0),
+            dwell(at: CGPoint(x: 1100, y: 850), seconds: 1.2)])
+        XCTAssertEqual(GestureSummary.describe(analysis, screenSize: screen),
+                       "The user paused about 2.0 s in the center; paused about 1.2 s in the bottom right.")
     }
 
     func testNoCoordinatesAppear() {
         let analysis = InkAnalysis(
             marks: [mark(.circle, from: CGPoint(x: 940, y: 100), to: CGPoint(x: 1060, y: 140))],
-            dwells: [dwell(at: CGPoint(x: 733, y: 411), seconds: 1.5)])
+            dwells: [dwell(at: CGPoint(x: 733, y: 411), seconds: 1.2)])
         let text = GestureSummary.describe(analysis, screenSize: screen) ?? ""
         for digit in "0123456789" where digit != "1" && digit != "2" && digit != "3" {
             XCTAssertFalse(text.contains(digit), "unexpected digit \(digit) in \(text)")
@@ -75,7 +84,7 @@ final class GestureSummaryTests: XCTestCase {
         XCTAssertLessThanOrEqual(text.count, GestureSummary.characterCap)
         XCTAssertTrue(text.hasPrefix("The user drew 12 marks in order while speaking: 1) "))
         XCTAssertTrue(text.contains("more"))
-        XCTAssertTrue(text.hasSuffix("paused about 1 s in the center."))
+        XCTAssertTrue(text.hasSuffix("paused about 1.0 s in the center."))
     }
 
     func testIsDeterministic() {
@@ -94,6 +103,6 @@ final class GestureSummaryTests: XCTestCase {
         let analysis = InkStroke(samples: samples).analyze()
         let text = GestureSummary.describe(analysis, screenSize: screen) ?? ""
         XCTAssertTrue(text.contains("drew a line from the left toward the center"), text)
-        XCTAssertTrue(text.contains("paused about 1 s in the center"), text)
+        XCTAssertTrue(text.contains("paused about 1.0 s in the center"), text)
     }
 }

@@ -10,7 +10,9 @@
 //  The model owns the stroke's lifecycle:
 //    - the key-down edge (seen by the poll) clears the last trail and starts a
 //      new stroke;
-//    - nothing is drawn until the pointer is 10 pt from where the stroke began;
+//    - nothing is drawn until the pointer is 8 pt from where the stroke began;
+//    - a sample closer than 1.5 pt to the last kept one is dropped (the
+//      closing sample at release is always kept);
 //    - while the keys are held the ink stays;
 //    - after release it holds for 1.5 s, then fades the whole group's opacity
 //      (never a single stroke), then clears;
@@ -38,8 +40,6 @@ enum InkDisplayOptions {
 
 @MainActor
 final class InkTrailModel: ObservableObject {
-    /// Movement from where the stroke began before any ink is drawn.
-    static let drawingThresholdPoints: CGFloat = 10
     /// A hard cap so a very long hold cannot grow without bound (about 65 s at 60 Hz).
     private static let maximumSamples = 4000
     private static let presetDefaultsKey = "inkPreset"
@@ -124,7 +124,7 @@ final class InkTrailModel: ObservableObject {
     func endStroke(finalPoint: CGPoint) -> [InkSample] {
         guard isHeld else { return samples }
         isHeld = false
-        append(InkSample(point: finalPoint, time: ProcessInfo.processInfo.systemUptime))
+        append(InkSample(point: finalPoint, time: ProcessInfo.processInfo.systemUptime), isFinal: true)
         scheduleFade()
         return samples
     }
@@ -139,12 +139,13 @@ final class InkTrailModel: ObservableObject {
         groupOpacity = 1
     }
 
-    private func append(_ sample: InkSample) {
+    private func append(_ sample: InkSample, isFinal: Bool = false) {
         guard samples.count < Self.maximumSamples else { return }
+        guard InkStroke.shouldKeepSample(sample.point, after: samples.last?.point, isFinal: isFinal) else { return }
         if origin == nil { origin = sample.point }
         samples.append(sample)
         if !isDrawing, let origin,
-           InkGeometry.distance(sample.point, origin) >= Self.drawingThresholdPoints {
+           InkGeometry.distance(sample.point, origin) >= InkStroke.liveTrailThreshold {
             isDrawing = true
         }
     }

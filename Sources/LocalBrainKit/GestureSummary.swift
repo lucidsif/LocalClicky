@@ -9,7 +9,7 @@
 //  Example:
 //    The user drew 2 marks in order while speaking: 1) circled an area in the
 //    top right; 2) drew a line from the center toward the bottom; paused about
-//    1 s in the center.
+//    1.0 s in the center.
 //
 //  Deterministic, and capped near 300 characters by listing fewer marks
 //  ("and N more") rather than cutting mid-phrase.
@@ -28,9 +28,14 @@ public enum GestureSummary {
         guard !analysis.isEmpty else { return nil }
 
         let markPhrases = analysis.marks.map { phrase(for: $0, screenSize: screenSize) }
-        let dwellPhrases = analysis.dwells.prefix(maxDwellsListed).map { dwell -> String in
-            let seconds = max(1, Int(dwell.duration.rounded()))
-            return "paused about \(seconds) s in the \(InkRegion.name(for: dwell.location, in: screenSize))"
+        // Keep the longest pauses (in time order): at the 0.35 s reporting
+        // threshold short hovers are common and would crowd out the real pause.
+        let longest = Set(analysis.dwells.enumerated()
+            .sorted { ($0.element.duration, $1.offset) > ($1.element.duration, $0.offset) }
+            .prefix(maxDwellsListed).map(\.offset))
+        let kept = analysis.dwells.enumerated().filter { longest.contains($0.offset) }.map(\.element)
+        let dwellPhrases = kept.map { dwell -> String in
+            return "paused about \(secondsText(dwell.duration)) s in the \(InkRegion.name(for: dwell.location, in: screenSize))"
         }
 
         var listed = min(markPhrases.count, maxMarksListed)
@@ -44,6 +49,11 @@ public enum GestureSummary {
     }
 
     // MARK: - Phrases
+
+    /// One decimal, so a 0.4 s hover reads "0.4" and a long pause "2.4".
+    static func secondsText(_ duration: Double) -> String {
+        String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), duration)
+    }
 
     private static func phrase(for mark: InkMark, screenSize: CGSize) -> String {
         switch mark.kind {

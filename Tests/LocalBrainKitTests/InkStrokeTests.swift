@@ -203,6 +203,45 @@ final class InkStrokeTests: XCTestCase {
         XCTAssertEqual(dwells[0].duration, 1.2, accuracy: 0.05)
     }
 
+    func testThresholdsAreDocumentedValues() {
+        XCTAssertEqual(InkStroke.dwellReportDuration, 0.35)
+        XCTAssertEqual(InkStroke.markSplitDuration, 0.6)
+        XCTAssertEqual(InkStroke.dwellRadius, 12)
+        XCTAssertEqual(InkStroke.liveTrailThreshold, 8)
+        XCTAssertEqual(InkStroke.minimumSampleSpacing, 1.5)
+    }
+
+    func testPauseBetweenReportAndSplitIsReportedButDoesNotSplit() {
+        var samples = InkFixtures.line(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 100), wobble: 0)
+        samples += InkFixtures.hold(at: CGPoint(x: 300, y: 100), duration: 0.45, startTime: 0.5)
+        let afterHold = samples[samples.count - 1].time
+        samples += InkFixtures.line(from: CGPoint(x: 300, y: 100), to: CGPoint(x: 300, y: 320), wobble: 0, startTime: afterHold + 0.02)
+        let stroke = InkStroke(samples: samples)
+        let analysis = stroke.analyze()
+        XCTAssertEqual(analysis.dwells.count, 1)
+        XCTAssertGreaterThanOrEqual(analysis.dwells[0].duration, 0.35)
+        XCTAssertLessThan(analysis.dwells[0].duration, 0.6)
+        XCTAssertEqual(analysis.marks.count, 1)
+        XCTAssertEqual(stroke.marks().count, 1)
+    }
+
+    func testPauseUnderReportThresholdIsNotReported() {
+        var samples = InkFixtures.line(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 100), wobble: 0)
+        samples += InkFixtures.hold(at: CGPoint(x: 300, y: 100), duration: 0.15, startTime: 0.5)
+        samples += InkFixtures.line(from: CGPoint(x: 300, y: 100), to: CGPoint(x: 300, y: 320), wobble: 0, startTime: 0.67)
+        XCTAssertTrue(InkStroke(samples: samples).analyze().dwells.isEmpty)
+    }
+
+    func testSampleSpacingKeepsFirstFarAndFinalButDropsClose() {
+        let last = CGPoint(x: 100, y: 100)
+        XCTAssertTrue(InkStroke.shouldKeepSample(CGPoint(x: 100, y: 100), after: nil))
+        XCTAssertFalse(InkStroke.shouldKeepSample(CGPoint(x: 101, y: 100.5), after: last))
+        XCTAssertTrue(InkStroke.shouldKeepSample(CGPoint(x: 101.5, y: 100), after: last))
+        XCTAssertTrue(InkStroke.shouldKeepSample(CGPoint(x: 102, y: 100), after: last))
+        XCTAssertFalse(InkStroke.shouldKeepSample(last, after: last))
+        XCTAssertTrue(InkStroke.shouldKeepSample(last, after: last, isFinal: true))
+    }
+
     func testDwellSplitsTheStrokeIntoTwoMarks() {
         var samples = InkFixtures.line(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 100), wobble: 0)
         samples += InkFixtures.hold(at: CGPoint(x: 300, y: 100), duration: 0.8, startTime: 0.5)
