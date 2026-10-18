@@ -131,7 +131,7 @@ public enum LocalPrompts {
     /// as they are on every turn without ink. One sentence says the user marked
     /// the area and to answer about it; then the gesture summary; then, on a
     /// describe turn that carries the close-up, a line about the second image;
-    /// then the Accessibility block for the marked area when there is one.
+    /// then, when there is an Accessibility block for the marked area, one sentence saying its names and links came straight from the app, and the block.
     public static func inkAddendum(gestureSummary: String,
                                    markerColourName: String,
                                    hasCloseUp: Bool,
@@ -141,7 +141,10 @@ public enum LocalPrompts {
         if !summary.isEmpty { parts.append(summary) }
         if hasCloseUp { parts.append("the second image is a close-up of the marked area.") }
         let elements = accessibilityBlock.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !elements.isEmpty { parts.append(elements) }
+        if !elements.isEmpty {
+            parts.append("the names and links in this list were read directly from the app itself, so use them exactly as written rather than reading them off the image.")
+            parts.append(elements)
+        }
         return parts.joined(separator: "\n")
     }
 

@@ -19,12 +19,17 @@ public struct AccessibilityElementRecord: Equatable, Sendable {
     public var value: String?
     public var description: String?
     public var url: String?
+    /// For a link that has no address of its own and none on its nearest
+    /// ancestors: a short phrase naming the nearest labelled ancestor it sits
+    /// in, for example `group "Navigation"`. Nil otherwise.
+    public var linkedFrom: String?
     public var isSecure: Bool
     /// Screen frame with a top-left origin (as AX reports it), so smaller y is higher.
     public var frame: CGRect
 
     public init(role: String? = nil, subrole: String? = nil, title: String? = nil,
                 value: String? = nil, description: String? = nil, url: String? = nil,
+                linkedFrom: String? = nil,
                 isSecure: Bool = false, frame: CGRect = .zero) {
         self.role = role
         self.subrole = subrole
@@ -32,6 +37,7 @@ public struct AccessibilityElementRecord: Equatable, Sendable {
         self.value = value
         self.description = description
         self.url = url
+        self.linkedFrom = linkedFrom
         self.isSecure = isSecure
         self.frame = frame
     }
@@ -39,9 +45,15 @@ public struct AccessibilityElementRecord: Equatable, Sendable {
 
 public enum AccessibilitySummary {
     public static let maxElements = 25
-    public static let maxTextLength = 80
+    public static let maxTextLength = 120
     /// Elements whose tops are within this many points share a reading row.
     static let rowTolerance: CGFloat = 8
+
+    /// How many distinct, non-secure records carry any text. The harvester uses
+    /// it to decide whether the point probes found enough to skip the tree walk.
+    public static func usableCount(_ records: [AccessibilityElementRecord]) -> Int {
+        deduplicated(records.filter { !isSecure($0) && hasContent($0) }).count
+    }
 
     /// A short block for the prompt, or "" when no usable element remains.
     public static func summarize(_ records: [AccessibilityElementRecord],
@@ -83,7 +95,7 @@ public enum AccessibilitySummary {
         var result: [AccessibilityElementRecord] = []
         for record in records {
             let key = [roleWords(record), clean(record.title), clean(record.value),
-                       clean(record.description), clean(record.url)]
+                       clean(record.description), clean(record.url), clean(record.linkedFrom)]
                 .map { $0 ?? "" }.joined(separator: "\u{1F}")
             if seen.insert(key).inserted { result.append(record) }
         }
@@ -125,13 +137,16 @@ public enum AccessibilitySummary {
         }
         if let url = clean(record.url) {
             text += ", link to \(truncated(url))"
+        } else if let origin = clean(record.linkedFrom) {
+            text += ", link with no address of its own, inside \(truncated(origin))"
         }
         return text
     }
 
     private static func truncated(_ text: String) -> String {
         guard text.count > maxTextLength else { return text }
-        return String(text.prefix(maxTextLength - 3)) + "..."
+        let cut = String(text.prefix(maxTextLength - 3)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return cut + "..."
     }
 
     private static let subroleWords: [String: String] = [

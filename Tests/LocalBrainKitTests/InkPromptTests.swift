@@ -29,9 +29,14 @@ final class InkPromptTests: XCTestCase {
         let with = LocalPrompts.inkAddendum(gestureSummary: summary, markerColourName: "yellow",
                                             hasCloseUp: true, accessibilityBlock: block)
         XCTAssertTrue(with.hasSuffix(block))
+        XCTAssertTrue(with.contains("read directly from the app itself"))
+        XCTAssertTrue(with.contains("use them exactly as written"))
+        let sentenceIndex = with.range(of: "read directly from the app itself")!.lowerBound
+        XCTAssertLessThan(sentenceIndex, with.range(of: block)!.lowerBound)
         let empty = LocalPrompts.inkAddendum(gestureSummary: summary, markerColourName: "yellow",
                                              hasCloseUp: true, accessibilityBlock: "  \n ")
         XCTAssertFalse(empty.contains("Elements inside"))
+        XCTAssertFalse(empty.contains("read directly from the app"))
         XCTAssertFalse(empty.hasSuffix("\n"))
     }
 

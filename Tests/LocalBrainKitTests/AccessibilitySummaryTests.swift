@@ -99,13 +99,46 @@ final class AccessibilitySummaryTests: XCTestCase {
         XCTAssertTrue(text.hasSuffix("(15 more not listed)"))
     }
 
-    func testValuesAreTruncatedToEightyCharacters() {
+    func testValuesAreTruncatedToOneTwentyCharacters() {
         let long = String(repeating: "a", count: 200)
         let text = AccessibilitySummary.summarize([record("AXTextArea", title: "Notes", value: long)])
         let valueLine = lines(text).last ?? ""
         let value = valueLine.components(separatedBy: "value \"").last?.dropLast() ?? ""
-        XCTAssertEqual(value.count, 80)
+        XCTAssertEqual(value.count, 120)
         XCTAssertTrue(value.hasSuffix("..."))
+    }
+
+    func testTruncationIsTrimmedBeforeTheEllipsis() {
+        let text = AccessibilitySummary.summarize([record("AXStaticText", title: "Note",
+                                                          value: String(repeating: "a", count: 116) + " tail words")])
+        XCTAssertTrue(text.contains("aaaa...\""), text)
+        XCTAssertFalse(text.contains(" ...\""), text)
+    }
+
+    func testLinkWithNoAddressNamesWhatItSitsInside() {
+        let linked = AccessibilityElementRecord(role: "AXLink", title: "Read more", linkedFrom: "group \"Blog posts\"",
+                                                frame: CGRect(x: 0, y: 0, width: 80, height: 20))
+        let text = AccessibilitySummary.summarize([linked])
+        XCTAssertTrue(text.contains("- link \"Read more\", link with no address of its own, inside group \"Blog posts\""), text)
+    }
+
+    func testAddressWinsOverLinkedFrom() {
+        let linked = AccessibilityElementRecord(role: "AXLink", title: "Docs", url: "https://example.com",
+                                                linkedFrom: "group \"X\"", frame: CGRect(x: 0, y: 0, width: 80, height: 20))
+        let text = AccessibilitySummary.summarize([linked])
+        XCTAssertTrue(text.contains("link to https://example.com"))
+        XCTAssertFalse(text.contains("no address of its own"))
+    }
+
+    func testUsableCountIgnoresSecureEmptyAndDuplicates() {
+        XCTAssertEqual(AccessibilitySummary.usableCount([]), 0)
+        XCTAssertEqual(AccessibilitySummary.usableCount([
+            record("AXButton", title: "Save"),
+            record("AXButton", title: "Save"),
+            record("AXGroup"),
+            record("AXTextField", title: "Password", secure: true),
+            record("AXButton", title: "Cancel"),
+        ]), 2)
     }
 
     func testShortValuesAreNotAltered() {
