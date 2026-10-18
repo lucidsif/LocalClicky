@@ -185,6 +185,13 @@ final class CompanionManager: ObservableObject {
     /// no transcript, or a newer press, discards it. Only in memory.
     private var pendingInkTask: Task<InkTurnPackage?, Never>?
 
+    /// Decides when an idle voice state means the press was abandoned and its
+    /// capture and ink can go (see bindVoiceStateObservation).
+    private lazy var pressCaptureLifetime = PressCaptureLifetime(
+        isSettledIdle: { [unowned self] in !buddyDictationManager.isDictationInProgress },
+        discard: { [unowned self] in discardPressCapture() }
+    )
+
     /// Pointing state for one response, touched only on the main actor. It lets
     /// the stream-end path know whether the cursor already left early, and stops
     /// a late early-dispatch from running after the final parse took over.
@@ -927,11 +934,15 @@ final class CompanionManager: ObservableObject {
                 // state. Without this, a turn that began while still speaking could
                 // leave the UI wedged on "responding".
                 let userIsInteracting = isRecording || isFinalizing || isPreparing
-                // Dictation ended. If it produced a transcript, the response
-                // handler already claimed the key-press screenshot (that runs
-                // before this callback), so anything left is from an empty or
-                // cancelled press and is dropped.
-                if !userIsInteracting { self.discardPressCapture() }
+                // Dictation ended. At key up the recording flag falls before the
+                // finalizing flag rises, so this callback sees an all-idle
+                // snapshot while the transcript is still coming; discarding on
+                // it would drop the capture and ink before the turn claims them.
+                // The lifetime acts only if the live state is still idle after
+                // the main-queue turn. A transcript is claimed synchronously as
+                // the session ends, ahead of that check, so what remains is from
+                // an empty or cancelled press and is dropped.
+                self.pressCaptureLifetime.voiceActivityEmitted(isIdle: !userIsInteracting)
                 if self.voiceState == .responding && !userIsInteracting { return }
                 if isFinalizing {
                     self.voiceState = .processing
@@ -1025,6 +1036,7 @@ final class CompanionManager: ObservableObject {
     /// capturing after the transcript, as before.
     private func startPressCapture(timer: TurnTimer?) {
         discardPressCapture()
+        pressCaptureLifetime.beginPress()
         guard PressCapturePolicy.shouldCapture(
             textOnlyMode: isTextOnlyMode,
             screenPermissionGranted: hasScreenRecordingPermission
