@@ -924,6 +924,22 @@ func runSelfTest() -> Never {
     check("ax target: no window at the point gives nil",
           AccessibilityTargetApp.owningPid(windows: [axApp], at: CGPoint(x: 900, y: 700), excludingPid: 100) == nil)
 
+    var markSchedule = SpeechMarkScheduler<String>()
+    markSchedule.markClosed("m1", at: 0)
+    let markClip1 = markSchedule.sentenceQueued()
+    markSchedule.markClosed("m2", at: 0.2)
+    let markClip2 = markSchedule.sentenceQueued()
+    markSchedule.clipStarted(id: markClip1, at: 0.5)
+    let markFirst = markSchedule.release(at: 0.5)
+    markSchedule.markClosed("m3", at: 1.0)
+    let markSecondEarly = markSchedule.release(at: 1.2)
+    markSchedule.clipStarted(id: markClip2, audibleIn: 0.18, at: 2.0)
+    check("speech marks: each tag binds to its own sentence and shows when that clip starts",
+          markFirst == ["m1"] && markSecondEarly.isEmpty && markSchedule.release(at: 2.04) == ["m2"])
+    check("speech marks: a tag with no sentence shows after 1.5 s, a cancel drops what waits",
+          markSchedule.release(at: 2.49) == [] && markSchedule.release(at: 2.5) == ["m3"]
+          && { var c = SpeechMarkScheduler<Int>(); c.markClosed(1, at: 0); return c.cancel() == 1 && c.release(at: 9).isEmpty }())
+
     let drawCtx = ConversationRouter.Context(visionModeSelected: true, screenAvailable: true,
                                              previousTurnUsedScreen: false, hasConversationHistory: false)
     func drawRoute(_ words: String, enabled: Bool = true) -> ConversationRoute {

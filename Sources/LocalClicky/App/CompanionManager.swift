@@ -193,26 +193,13 @@ final class CompanionManager: ObservableObject {
         var isFinalized = false
     }
 
-    /// Drawings the stream has closed but the main actor has not shown yet, in
-    /// order. The streaming callback enqueues from its own thread; the main
-    /// actor drains, so the order never depends on how tasks interleave.
-    private final class TurnMarkQueue: @unchecked Sendable {
-        private let lock = NSLock()
-        private var pending: [InkDrawing] = []
-        private(set) var shownCount = 0
-        func enqueue(_ drawings: [InkDrawing]) {
-            guard !drawings.isEmpty else { return }
-            lock.lock(); defer { lock.unlock() }
-            pending.append(contentsOf: drawings)
-        }
-        func drain() -> [InkDrawing] {
-            lock.lock(); defer { lock.unlock() }
-            let ready = pending
-            pending = []
-            shownCount += ready.count
-            return ready
-        }
-    }
+    /// The current drawing turn's marks waiting for their sentence to be
+    /// spoken (SpeechMarkScheduler), the task that shows them when due, and the
+    /// base the next turn's speech clip ids start from (so a late clip start
+    /// from an earlier turn can never match this turn's marks).
+    private var markScheduler: SpeechMarkSchedulerBox<InkDrawing>?
+    private var markDriverTask: Task<Void, Never>?
+    private var nextClipIDBase = 1
 
     private var marksClearTask: Task<Void, Never>?
 
@@ -719,6 +706,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        cancelPendingMarks()
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -987,7 +975,9 @@ final class CompanionManager: ObservableObject {
             currentResponseTask = nil
             currentResponseIdentifier = nil
             speechSynthesizer.stopPlayback()
-            // The next press clears the assistant's marks at once.
+            // The next press clears the assistant's marks at once, and drops
+            // any still waiting for their sentence.
+            cancelPendingMarks()
             marksClearTask?.cancel()
             marksClearTask = nil
             assistantMarks.clearNow()
@@ -1162,6 +1152,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         currentResponseIdentifier = nil
         speechSynthesizer.stopPlayback()
+        cancelPendingMarks()
 
         let responseIdentifier = UUID()
         currentResponseIdentifier = responseIdentifier
@@ -1375,7 +1366,7 @@ final class CompanionManager: ObservableObject {
                 // answer finishes generating. A single serial consumer task
                 // speaks each ready sentence in order; the pointing tag is never
                 // spoken (speakablePrefix stops at it).
-                let (sentenceStream, sentenceContinuation) = AsyncStream<String>.makeStream()
+                let (sentenceStream, sentenceContinuation) = AsyncStream<(clipID: Int?, text: String)>.makeStream()
                 let speechProgress = StreamingSpeechProgress()
                 defer { sentenceContinuation.finish() }
 
@@ -1384,7 +1375,7 @@ final class CompanionManager: ObservableObject {
                         if Task.isCancelled { break }
                         guard let self else { break }
                         do {
-                            try await self.speechSynthesizer.speakText(sentence)
+                            try await self.speechSynthesizer.speakText(sentence.text, clipID: sentence.clipID)
                             timer?.mark(.firstAudio)
                         }
                         catch is CancellationError { break }
@@ -1412,7 +1403,17 @@ final class CompanionManager: ObservableObject {
                 // it closes. Only a drawing turn reads them.
                 let drawingCapture = wantsDrawing ? cursorScreenCapture : nil
                 let shapeDetector = StreamingShapeDetector()
-                let markQueue = TurnMarkQueue()
+                // Marks wait for their sentence to be spoken: a tag binds to the
+                // next sentence queued after it, and shows when that clip starts.
+                let scheduler: SpeechMarkSchedulerBox<InkDrawing>? = drawingCapture == nil ? nil : {
+                    let box = SpeechMarkSchedulerBox<InkDrawing>(firstClipID: nextClipIDBase)
+                    nextClipIDBase += 100_000
+                    return box
+                }()
+                defer { scheduler?.finishInput() }
+                if let scheduler, let capture = drawingCapture {
+                    startMarkDriver(scheduler, in: capture, timer: timer)
+                }
 
                 timer?.mark(.requestSent)
                 let result = try await ollamaClient.streamChat(
@@ -1424,21 +1425,17 @@ final class CompanionManager: ObservableObject {
                     contextWindow: contextWindow(forModel: model),
                     onText: { accumulated in
                         timer?.mark(.firstToken)
+                        // Tags first, then sentences: a tag-first beat line
+                        // delivered in one chunk must close its mark before its
+                        // sentence is queued, so the mark binds to that sentence.
+                        if let scheduler {
+                            for drawing in shapeDetector.feed(accumulated: accumulated) {
+                                scheduler.markClosed(drawing)
+                            }
+                        }
                         let speakable = SpokenTextSegmenter.speakablePrefix(accumulated)
                         if let (sentence, _) = speechProgress.advance(speakable: speakable) {
-                            sentenceContinuation.yield(sentence)
-                        }
-                        if drawingCapture != nil {
-                            let fresh = shapeDetector.feed(accumulated: accumulated)
-                            if !fresh.isEmpty {
-                                markQueue.enqueue(fresh)
-                                Task { @MainActor [weak self] in
-                                    guard let self,
-                                          self.currentResponseIdentifier == responseIdentifier,
-                                          let capture = drawingCapture else { return }
-                                    self.showQueuedMarks(markQueue, in: capture, timer: timer)
-                                }
-                            }
+                            sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: sentence))
                         }
                         if let capture = pointingCapture,
                            let tag = pointDetector.feed(accumulated: accumulated),
@@ -1459,10 +1456,12 @@ final class CompanionManager: ObservableObject {
 
                 // A tag that closed in the very last chunk. The detector never
                 // returns a tag twice, so this only adds what the stream missed.
-                if let capture = drawingCapture, !Task.isCancelled {
-                    markQueue.enqueue(shapeDetector.feed(accumulated: result.text))
-                    showQueuedMarks(markQueue, in: capture, timer: timer)
-                    timer?.setMarks(markQueue.shownCount)
+                if let scheduler, !Task.isCancelled {
+                    for drawing in shapeDetector.feed(accumulated: result.text) {
+                        scheduler.markClosed(drawing)
+                    }
+                    scheduler.finishInput()
+                    timer?.setMarks(scheduler.closedCount)
                 }
 
                 guard !Task.isCancelled else {
@@ -1482,7 +1481,7 @@ final class CompanionManager: ObservableObject {
                 // during streaming), then close the stream so the speaker drains.
                 let remainder = speechProgress.remainder(
                     speakable: SpokenTextSegmenter.speakablePrefix(result.text))
-                if !remainder.isEmpty { sentenceContinuation.yield(remainder) }
+                if !remainder.isEmpty { sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: remainder)) }
                 sentenceContinuation.finish()
 
                 if let capture = cursorScreenCapture {
@@ -1527,6 +1526,15 @@ final class CompanionManager: ObservableObject {
                 // Wait until every sentence has been synthesized and queued, then
                 // reflect that we're speaking.
                 await speakingTask.value
+                // Let the first mark reach the screen before the turn record is
+                // written, so first_mark is the real display time. Bounded: a
+                // mark is never held longer than SpeechMarkTiming.startTimeout.
+                if let scheduler {
+                    let give = Date().addingTimeInterval(SpeechMarkTiming.startTimeout + 0.5)
+                    while scheduler.releasedCount == 0, scheduler.hasPending, !Task.isCancelled, Date() < give {
+                        try? await Task.sleep(nanoseconds: 25_000_000)
+                    }
+                }
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     voiceState = .responding
                 }
@@ -1909,17 +1917,48 @@ final class CompanionManager: ObservableObject {
         )
     }
 
-    /// Shows every drawing the stream has closed so far, in order, on the
-    /// overlay of the display the screenshot was taken of. Called when a tag
-    /// closes (the TTS queue has no per-sentence start event to hang this on).
-    private func showQueuedMarks(_ queue: TurnMarkQueue, in capture: CompanionScreenCapture, timer: TurnTimer?) {
+    /// Shows each mark when its sentence is being spoken. The scheduler decides
+    /// when a mark is due (SpeechMarkScheduler); this task polls it every 25 ms
+    /// and hands due marks to the overlay, and ends when nothing is waiting and
+    /// the stream is done, or at a barge-in (`cancelPendingMarks`).
+    private func startMarkDriver(_ scheduler: SpeechMarkSchedulerBox<InkDrawing>,
+                                 in capture: CompanionScreenCapture,
+                                 timer: TurnTimer?) {
+        cancelPendingMarks()
+        markScheduler = scheduler
+        speechSynthesizer.onClipStart = { [weak scheduler] start in
+            scheduler?.clipStarted(id: start.id, audibleIn: start.audibleIn)
+        }
+        markDriverTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let due = scheduler.release()
+                if !due.isEmpty { self?.showMarks(due, in: capture, timer: timer) }
+                if scheduler.isDone { break }
+                try? await Task.sleep(nanoseconds: 25_000_000)
+            }
+        }
+    }
+
+    /// Barge-in or a new press: marks still waiting for their sentence are
+    /// dropped and never shown.
+    private func cancelPendingMarks() {
+        markDriverTask?.cancel()
+        markDriverTask = nil
+        markScheduler?.cancel()
+        markScheduler = nil
+        speechSynthesizer.onClipStart = nil
+    }
+
+    /// Hands marks to the overlay of the display the screenshot was taken of.
+    /// first_mark is recorded here, at the moment of display.
+    private func showMarks(_ drawings: [InkDrawing], in capture: CompanionScreenCapture, timer: TurnTimer?) {
         let mapping = ScreenMapping(displayFrame: capture.displayFrame,
                                     displayWidthInPoints: capture.displayWidthInPoints,
                                     displayHeightInPoints: capture.displayHeightInPoints,
                                     screenshotWidthInPixels: capture.screenshotWidthInPixels,
                                     screenshotHeightInPixels: capture.screenshotHeightInPixels)
         let reduceMotion = InkDisplayOptions.current().reduceMotion
-        for drawing in queue.drain() {
+        for drawing in drawings {
             let geometry = MarkGeometryBuilder.geometry(for: MarkGeometryBuilder.overlayDrawing(from: drawing, mapping: mapping))
             guard geometry.passes.contains(where: { !$0.isEmpty }) else { continue }
             timer?.mark(.firstMark)
@@ -1930,10 +1969,11 @@ final class CompanionManager: ObservableObject {
     /// Waits for the speech to finish, then starts the marks' hold and fade.
     /// A new key press cancels it and clears the marks at once.
     private func scheduleMarksClearAfterSpeech() {
-        guard assistantMarks.isShowing else { return }
+        guard assistantMarks.isShowing || markScheduler?.hasPending == true else { return }
         marksClearTask?.cancel()
         marksClearTask = Task { [weak self] in
-            while let self, self.speechSynthesizer.isPlaying {
+            // Marks still waiting for their sentence count: they show, then fade.
+            while let self, self.speechSynthesizer.isPlaying || self.markScheduler?.hasPending == true {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 if Task.isCancelled { return }
             }
@@ -2038,8 +2078,9 @@ final class CompanionManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
-            // Keep the overlay until the assistant's marks have faded out.
-            while assistantMarks.isShowing {
+            // Keep the overlay until the assistant's marks have faded out (and
+            // any still waiting for their sentence have appeared).
+            while assistantMarks.isShowing || markScheduler?.hasPending == true {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

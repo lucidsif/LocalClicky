@@ -77,7 +77,7 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 | `Sources/LocalBrainKit/PointingTag.swift` | Parses `[POINT:…]` / bounding boxes → a single center point. |
 | `Sources/LocalBrainKit/LocalPrompts.swift` | System prompts (with LocalClicky identity) for screen / text / onboarding. |
 | `Sources/LocalBrainKit/ConversationRouter.swift` | Per‑turn routing: clipboard / app‑launch / browser command vs screen vs text. |
-| `Sources/LocalBrainKit/Ink*.swift`, `ScreenMapping.swift`, `GestureSummary.swift`, `AccessibilitySummary.swift` | Ink in, all pure and unit‑tested: `InkPalette` (presets and the resolved three‑pass style, timings, cursor outline), `InkStroke` (jiggle, dwells, marks), `InkTurn` (analyse + composite + close‑up), `InkRouting` (ink forces a screen turn), `InkAccessibilityGrid` (AX probe points), `ScreenMapping` (pixel / display / global / CG spaces). |
+| `Sources/LocalBrainKit/Ink*.swift`, `ScreenMapping.swift`, `GestureSummary.swift`, `AccessibilitySummary.swift` | Ink in, all pure and unit‑tested: `InkPalette` (presets and the resolved three‑pass style, timings, cursor outline), `InkStroke` (jiggle, dwells reported at 0.35 s, marks split at 0.6 s), `AccessibilityTreeWalk` (bounded window walk + link address lookup), `InkTurn` (analyse + composite + close‑up), `InkRouting` (ink forces a screen turn), `InkAccessibilityGrid` (AX probe points), `ScreenMapping` (pixel / display / global / CG spaces). Ink out: `SpeechMarkScheduler` times each mark to the clip that speaks its sentence (`SpeechSynthesizing.onClipStart`). |
 | `Sources/LocalBrainKit/SpokenTextSegmenter.swift` | Splits a streaming answer into speakable sentences (skips the `[POINT]` tag). |
 | `Sources/LocalBrainKit/BrowserCommandPlanner.swift` | Maps a spoken command → concrete browser URLs (known‑site table, Gmail compose). |
 | `Sources/LocalBrainKit/AppCommandPlanner.swift` | Pure NL → app‑name extraction + deterministic install‑name matching (used by the launcher and unit‑tested). |
@@ -108,7 +108,7 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 scripts/bootstrap-ollama.sh        # ensure Ollama + models
 scripts/fetch-tts.sh               # vendor the neural TTS runtime + Piper voice (once)
 swift build                        # compile everything (CLT, no Xcode)
-swift run localbrain-harness --selftest          # 219 checks: parser + router + advisor + prompts + safety
+swift run localbrain-harness --selftest          # 225 checks: parser + router + advisor + prompts + safety
 swift run localbrain-harness --advise            # hardware profile + recommended models (+ autotune if present)
 swift run localbrain-harness --models            # installed Ollama models + which role each can fill
 swift run localbrain-harness --e2e shot.png      # full pipeline vs real models (text/describe/point/joke)
