@@ -190,7 +190,7 @@ public enum AccessibilitySummary {
 
     /// Plain words for the element kind. A known subrole wins over the role;
     /// an unknown role falls back to its AX name split into lowercase words.
-    static func roleWords(_ record: AccessibilityElementRecord) -> String {
+    public static func roleWords(_ record: AccessibilityElementRecord) -> String {
         if let subrole = record.subrole, let words = subroleWords[subrole] { return words }
         guard let role = record.role, !role.isEmpty else { return "element" }
         if let words = roleWordsTable[role] { return words }

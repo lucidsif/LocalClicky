@@ -53,7 +53,15 @@ enum InkTurnPreparer {
         let cgPoints = analysis.probePointsInDisplayPoints.map {
             mapping.cgGlobalPoint(forDisplayLocalPoint: $0, primaryScreenHeight: primaryHeight)
         }
-        async let harvested = AccessibilityHarvester.harvest(atCGPoints: cgPoints)
+        // The ink's box in the same space, for the tree-walk fallback.
+        let inkRect = InkAccessibilityGrid.bounds(of: analysis.analysis).map { area -> CGRect in
+            let corners = [CGPoint(x: area.minX, y: area.minY), CGPoint(x: area.maxX, y: area.maxY)].map {
+                mapping.cgGlobalPoint(forDisplayLocalPoint: $0, primaryScreenHeight: primaryHeight)
+            }
+            return CGRect(x: min(corners[0].x, corners[1].x), y: min(corners[0].y, corners[1].y),
+                          width: abs(corners[1].x - corners[0].x), height: abs(corners[1].y - corners[0].y))
+        }
+        async let harvested = AccessibilityHarvester.harvest(atCGPoints: cgPoints, inkRect: inkRect)
 
         let jpeg = capture.imageData
         let userInk = style.userInk

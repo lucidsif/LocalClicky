@@ -796,6 +796,19 @@ func runSelfTest() -> Never {
     check("accessibility: secure field dropped, duplicates merged",
           !axText.contains("hunter2") && !axText.contains("Password") && axText.components(separatedBy: "\"Save\"").count == 2)
 
+    let walkLeaf = (0..<500).map { index in (index, CGRect(x: 100, y: 100, width: 5, height: 5)) }
+    let walkResult = AccessibilityTreeWalk.collect(roots: [-1], inkRect: CGRect(x: 90, y: 90, width: 30, height: 30),
+                                                   frame: { $0 < 0 ? CGRect(x: 0, y: 0, width: 800, height: 600) : walkLeaf[$0].1 },
+                                                   children: { $0 < 0 ? Array(0..<500) : [] })
+    check("accessibility walk: bounded to 200 nodes, keeps only frames that meet the ink",
+          walkResult.visited == 200 && walkResult.stoppedEarly
+          && !AccessibilityTreeWalk.frameOverlaps(CGRect(x: 300, y: 300, width: 10, height: 10), inkRect: CGRect(x: 90, y: 90, width: 30, height: 30)))
+    check("accessibility link: finds an address up to 3 levels, never more",
+          AccessibilityLinkResolver.resolve(from: 0, parent: { $0 < 5 ? $0 + 1 : nil }, url: { $0 == 3 ? "https://x.test" : nil }, label: { _ in nil }).url == "https://x.test"
+          && AccessibilityLinkResolver.resolve(from: 0, parent: { $0 + 1 }, url: { $0 == 4 ? "https://x.test" : nil }, label: { _ in nil }).url == nil)
+    check("ink dwell: report and split thresholds are 0.35 s and 0.6 s",
+          InkStroke.dwellReportDuration == 0.35 && InkStroke.markSplitDuration == 0.6)
+
     let shapeResult = ShapeTagParser.parse(from: "[SHAPE:circle:500,400;560,400:save:screen2] That is the save button. [HIGHLIGHT:1,2,30,40:form] [POINT:7,8:x]")
     check("shape tag: circle parsed with label and screen",
           shapeResult.shapes.first?.kind == .circle && shapeResult.shapes.first?.label == "save"
@@ -886,6 +899,8 @@ func runSelfTest() -> Never {
     check("ink prompt: marker, summary, close-up line and element block",
           inkPrompt.contains("a yellow marker") && inkPrompt.contains("circled an area in the center")
           && inkPrompt.contains("second image is a close-up") && inkPrompt.hasSuffix("- button \"Save\""))
+    check("ink prompt: names and links are said to come from the app",
+          inkPrompt.contains("read directly from the app itself"))
     check("ink prompt: no close-up line on a pointing turn",
           !LocalPrompts.inkAddendum(gestureSummary: "x", markerColourName: "red", hasCloseUp: false).contains("second image"))
 

@@ -7,6 +7,13 @@
 //  points. It returns plain records; AccessibilitySummary (LocalBrainKit) turns
 //  them into the prompt text and drops secure fields.
 //
+//  A link with no address of its own looks up to three AXParent levels for one
+//  (AccessibilityLinkResolver). When the point probes find fewer than two
+//  usable elements, the tree is walked from the hit window (else the app's
+//  focused window), keeping elements whose frame meets the ink rectangle, at
+//  most 200 nodes and 6 levels deep (AccessibilityTreeWalk), inside the same
+//  time budget.
+//
 //  The hit test is asked of one application (the frontmost one that is not us,
 //  else the owner of the topmost window at the ink centre); the system-wide
 //  element is only the fallback, because it can answer with our own overlay.
@@ -30,9 +37,11 @@ enum AccessibilityHarvester {
     /// A text area's value can be huge; the summary shortens it further.
     private static let maxValueCharacters = 400
 
-    /// `cgPoints` are in Core Graphics global coordinates (origin top-left of
-    /// the primary display, y down), the space the hit test uses.
+    /// `cgPoints` and `inkRect` are in Core Graphics global coordinates (origin
+    /// top-left of the primary display, y down), the space the hit test uses.
+    /// Without an `inkRect` the tree-walk fallback is skipped.
     static func harvest(atCGPoints cgPoints: [CGPoint],
+                        inkRect: CGRect? = nil,
                         budgetSeconds: Double = AccessibilityHarvester.budgetSeconds) async -> [AccessibilityElementRecord] {
         guard !cgPoints.isEmpty, AXIsProcessTrusted() else { return [] }
         let collector = Collector()
@@ -40,7 +49,7 @@ enum AccessibilityHarvester {
         return await withCheckedContinuation { continuation in
             let gate = ResumeOnce(continuation: continuation, collector: collector)
             DispatchQueue.global(qos: .userInitiated).async {
-                probe(cgPoints, deadline: deadline, collector: collector)
+                probe(cgPoints, inkRect: inkRect, deadline: deadline, collector: collector)
                 gate.finish()
             }
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + budgetSeconds) {
@@ -51,11 +60,11 @@ enum AccessibilityHarvester {
 
     // MARK: - Probing
 
-    private static func probe(_ points: [CGPoint], deadline: Date, collector: Collector) {
+    private static func probe(_ points: [CGPoint], inkRect: CGRect?, deadline: Date, collector: Collector) {
         let ownProcess = ProcessInfo.processInfo.processIdentifier
         var seen: [AXUIElement] = []
 
-        /// Reads one hit element once. The same element is hit by many grid
+        /// Reads one element once. The same element is hit by many grid
         /// points. Our own overlay windows are not content.
         func take(_ element: AXUIElement) {
             if seen.contains(where: { CFEqual($0, element) }) { return }
@@ -77,6 +86,12 @@ enum AccessibilityHarvester {
                     take(element)
                 }
             }
+            // Too little from the points: walk the window's tree for whatever
+            // overlaps the ink. The walk shares this probe's deadline.
+            if let inkRect,
+               AccessibilitySummary.usableCount(collector.snapshot()) < AccessibilityTreeWalk.minimumProbeElements {
+                walkWindow(application: application, hits: seen, inkRect: inkRect, deadline: deadline, take: take)
+            }
             if !seen.isEmpty { return }
         }
 
@@ -91,6 +106,39 @@ enum AccessibilityHarvester {
             guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &found) == .success,
                   let element = found else { continue }
             take(element)
+        }
+    }
+
+    /// Fallback: breadth-first over AXChildren from the window the probes hit
+    /// (or the app's focused window), handing every element whose frame meets
+    /// the ink rectangle to `take`. Bounded by AccessibilityTreeWalk's node and
+    /// depth limits and the probe's deadline.
+    private static func walkWindow(application: AXUIElement,
+                                   hits: [AXUIElement],
+                                   inkRect: CGRect,
+                                   deadline: Date,
+                                   take: (AXUIElement) -> Void) {
+        var window: AXUIElement?
+        for hit in hits {
+            if let found = element(hit, kAXWindowAttribute) { window = found; break }
+        }
+        if window == nil { window = element(application, kAXFocusedWindowAttribute) }
+        guard let window else { return }
+        AXUIElementSetMessagingTimeout(window, perCallTimeoutSeconds)
+
+        let result = AccessibilityTreeWalk.collect(
+            roots: [window],
+            inkRect: inkRect,
+            frame: { node in
+                AXUIElementSetMessagingTimeout(node, perCallTimeoutSeconds)
+                let known = frame(of: node)
+                return known == .zero ? nil : known
+            },
+            children: { node in elements(node, kAXChildrenAttribute) },
+            shouldStop: { Date() >= deadline })
+        for node in result.nodes {
+            if Date() >= deadline { return }
+            take(node)
         }
     }
 
@@ -142,14 +190,57 @@ enum AccessibilityHarvester {
         }
         var value = string(element, kAXValueAttribute)
         if let long = value, long.count > maxValueCharacters { value = String(long.prefix(maxValueCharacters)) }
+        var url = string(element, kAXURLAttribute)
+        var linkedFrom: String?
+        if role == "AXLink", url == nil {
+            let found = AccessibilityLinkResolver.resolve(
+                from: element,
+                parent: { node in
+                    AXUIElementSetMessagingTimeout(node, perCallTimeoutSeconds)
+                    return Self.element(node, kAXParentAttribute)
+                },
+                url: { string($0, kAXURLAttribute) },
+                label: { ancestorLabel($0) })
+            url = found.url
+            linkedFrom = found.linkedFrom
+        }
         return AccessibilityElementRecord(role: role,
                                           subrole: subrole,
                                           title: string(element, kAXTitleAttribute),
                                           value: value,
                                           description: string(element, kAXDescriptionAttribute),
-                                          url: string(element, kAXURLAttribute),
+                                          url: url,
+                                          linkedFrom: linkedFrom,
                                           isSecure: false,
                                           frame: frame)
+    }
+
+    /// A short phrase for an ancestor such as `group "Navigation"`, or nil when
+    /// it has no title or description. Never read from a secure field.
+    private static func ancestorLabel(_ element: AXUIElement) -> String? {
+        let role = string(element, kAXRoleAttribute)
+        let subrole = string(element, kAXSubroleAttribute)
+        if role == "AXSecureTextField" || subrole == "AXSecureTextField" { return nil }
+        let name = [string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute)]
+            .compactMap { $0 }
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard let name else { return nil }
+        let words = AccessibilitySummary.roleWords(AccessibilityElementRecord(role: role, subrole: subrole))
+        return "\(words) \"\(name)\""
+    }
+
+    private static func element(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &raw) == .success,
+              let raw, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+        return (raw as! AXUIElement)
+    }
+
+    private static func elements(_ element: AXUIElement, _ attribute: String) -> [AXUIElement] {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &raw) == .success,
+              let list = raw as? [AXUIElement] else { return [] }
+        return list
     }
 
     private static func string(_ element: AXUIElement, _ attribute: String) -> String? {
