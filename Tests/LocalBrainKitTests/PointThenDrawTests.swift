@@ -12,8 +12,13 @@ final class PointThenDrawTests: XCTestCase {
                                          displayWidthInPoints: 400, displayHeightInPoints: 800,
                                          screenshotWidthInPixels: 400, screenshotHeightInPixels: 800)
 
+    private struct NotAShape: Error {}
+
     private func shape(_ plan: PointDrawPlan) throws -> ShapeTag {
-        guard case .shape(let tag) = plan.drawing else { throw XCTSkip("not a shape") }
+        guard case .shape(let tag) = plan.drawing else {
+            XCTFail("the plan must be a shape, got \(plan.drawing)")
+            throw NotAShape()
+        }
         return tag
     }
 
@@ -36,11 +41,19 @@ final class PointThenDrawTests: XCTestCase {
         let point = CGPoint(x: 848 * 0.45, y: 614 * 0.45)
         let tag = try shape(PointThenDraw.plan(kind: .circle, pointInImagePixels: point, label: "x",
                                                controlFrameInDisplayPoints: frame, mapping: external))
-        XCTAssertEqual(tag.points[0], point)
+        // Centred on the frame (848, 614 pt = 381.6, 276.3 px), not on the point.
+        let frameCentre = CGPoint(x: 848 * 0.45, y: 614 * 0.45)
+        let offPoint = CGPoint(x: point.x + 10, y: point.y - 4)
+        let offTag = try shape(PointThenDraw.plan(kind: .circle, pointInImagePixels: offPoint, label: "x",
+                                                  controlFrameInDisplayPoints: frame, mapping: external))
+        XCTAssertEqual(offTag.points[0].x, frameCentre.x, accuracy: 1e-9)
+        XCTAssertEqual(offTag.points[0].y, frameCentre.y, accuracy: 1e-9)
+        XCTAssertNotEqual(offTag.points[0], offPoint)
+        XCTAssertEqual(tag.points[0].x, frameCentre.x, accuracy: 1e-9)
         let radius = Double(tag.points[1].x - tag.points[0].x)
         XCTAssertEqual(radius, 0.5 * hypot(96, 28) * 1.15 * 0.45, accuracy: 1e-9)
         XCTAssertEqual(radius, 25.875, accuracy: 1e-9)
-        XCTAssertEqual(tag.points[1].y, point.y)
+        XCTAssertEqual(tag.points[1].y, tag.points[0].y)
     }
 
     func testAFrameThatIsNotOneControlFallsBackToTheDefaultRadius() throws {

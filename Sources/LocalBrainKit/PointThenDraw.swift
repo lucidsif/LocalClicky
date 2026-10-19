@@ -90,10 +90,13 @@ public enum PointThenDraw {
         case .circle:
             let radius = frame.map { 0.5 * hypot($0.width, $0.height) * controlRingMargin }
                 ?? defaultRingRadiusInImagePixels
+            // With a control frame the ring is centred on the frame (the model's
+            // point is a noisy estimate, the frame is exact); without one, on the point.
+            let ringCentre = frame.map { CGPoint(x: min(max($0.midX, 0), width), y: min(max($0.midY, 0), height)) } ?? centre
             // The ring point sits directly right of the centre (the tag grammar),
             // or left of it when the ring would run off the screenshot.
-            let ringX = centre.x + radius <= width ? centre.x + radius : centre.x - radius
-            points = [centre, CGPoint(x: ringX, y: centre.y)]
+            let ringX = ringCentre.x + radius <= width ? ringCentre.x + radius : ringCentre.x - radius
+            points = [ringCentre, CGPoint(x: ringX, y: ringCentre.y)]
         case .arrow:
             points = arrowPoints(tipTarget: centre, frame: frame, width: width, height: height)
         }
