@@ -58,6 +58,47 @@ enum AccessibilityHarvester {
         }
     }
 
+    // MARK: - One element's frame
+
+    /// The frame (Core Graphics global coordinates, like `harvest`) of the one
+    /// element under `cgPoint`, for the ring and arrow the app draws from a
+    /// point (PointThenDraw). Nil without the Accessibility permission, when
+    /// nothing answers within `budgetSeconds`, or when the element has no frame.
+    /// Reads the frame only: no title, value or other text.
+    static func frameOfElement(atCGPoint cgPoint: CGPoint,
+                               budgetSeconds: Double = AccessibilityHarvester.budgetSeconds) async -> CGRect? {
+        guard AXIsProcessTrusted() else { return nil }
+        return await withCheckedContinuation { continuation in
+            let gate = FrameResumeOnce(continuation: continuation)
+            DispatchQueue.global(qos: .userInitiated).async { gate.finish(hitFrame(atCGPoint: cgPoint)) }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + budgetSeconds) { gate.finish(nil) }
+        }
+    }
+
+    /// The same two-step hit test as the harvest: the target application first
+    /// (the system-wide element can answer with our own overlay), the
+    /// system-wide element only when that finds nothing.
+    private static func hitFrame(atCGPoint point: CGPoint) -> CGRect? {
+        let ownProcess = ProcessInfo.processInfo.processIdentifier
+        func frameIfUsable(_ element: AXUIElement) -> CGRect? {
+            var pid: pid_t = 0
+            if AXUIElementGetPid(element, &pid) == .success, pid == ownProcess { return nil }
+            AXUIElementSetMessagingTimeout(element, perCallTimeoutSeconds)
+            let found = frame(of: element)
+            return found == .zero ? nil : found
+        }
+        var found: AXUIElement?
+        if let application = targetApplicationElement(for: [point], ownProcess: ownProcess),
+           AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &found) == .success,
+           let element = found {
+            return frameIfUsable(element)
+        }
+        let systemWide = AXUIElementCreateSystemWide()
+        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &found) == .success,
+              let element = found else { return nil }
+        return frameIfUsable(element)
+    }
+
     // MARK: - Probing
 
     private static func probe(_ points: [CGPoint], inkRect: CGRect?, deadline: Date, collector: Collector) {
@@ -281,6 +322,21 @@ enum AccessibilityHarvester {
         func snapshot() -> [AccessibilityElementRecord] {
             lock.lock(); defer { lock.unlock() }
             return records
+        }
+    }
+
+    /// Resumes the frame lookup exactly once: with the frame or when the budget
+    /// runs out, whichever comes first.
+    private final class FrameResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<CGRect?, Never>?
+        init(continuation: CheckedContinuation<CGRect?, Never>) { self.continuation = continuation }
+        func finish(_ frame: CGRect?) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: frame)
         }
     }
 

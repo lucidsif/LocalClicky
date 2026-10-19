@@ -1259,6 +1259,12 @@ final class CompanionManager: ObservableObject {
                 // coordinates are in the full image, so no close-up, a tight
                 // prompt and no clock context.
                 let wantsGrounding = wantsPointing || wantsDrawing
+                // A circle or arrow request is drawn from a point: the grounding
+                // model gets the pointing prompt and the app builds the mark
+                // (PointThenDraw). Other marks, and the flag off, keep the shape tags.
+                var pointThenDrawKind: PointDrawKind? = wantsDrawing
+                    ? DrawingIntent.pointThenDrawKind(transcript, pointThenDrawEnabled: PointThenDraw.isEnabled())
+                    : nil
 
                 var cursorScreenCapture: CompanionScreenCapture?
                 let systemPrompt: String
@@ -1317,10 +1323,15 @@ final class CompanionManager: ObservableObject {
                         // instead, the same fallback a pointing turn has.
                         let drawingModel = resolvedGroundingModelName()
                         if LocalModels.isLikelyGroundingCapable(drawingModel) {
-                            systemPrompt = LocalPrompts.screenDrawResponse(
-                                imageWidthInPixels: capture.screenshotWidthInPixels,
-                                imageHeightInPixels: capture.screenshotHeightInPixels)
+                            systemPrompt = pointThenDrawKind != nil
+                                ? LocalPrompts.screenPointResponse(
+                                    imageWidthInPixels: capture.screenshotWidthInPixels,
+                                    imageHeightInPixels: capture.screenshotHeightInPixels)
+                                : LocalPrompts.screenDrawResponse(
+                                    imageWidthInPixels: capture.screenshotWidthInPixels,
+                                    imageHeightInPixels: capture.screenshotHeightInPixels)
                         } else {
+                            pointThenDrawKind = nil
                             systemPrompt = LocalPrompts.screenDescribe(
                                 imageWidthInPixels: capture.screenshotWidthInPixels,
                                 imageHeightInPixels: capture.screenshotHeightInPixels)
@@ -1399,7 +1410,7 @@ final class CompanionManager: ObservableObject {
                 // text turns get enough room to finish a real thought (the prompt
                 // still asks for brevity) so answers don't get truncated mid-word.
                 let answerMaxTokens: Int = {
-                    if wantsPointing { return 130 }
+                    if wantsPointing || pointThenDrawKind != nil { return 130 }
                     // Up to three tag-first beat lines: tags are token-heavy.
                     if wantsDrawing { return 260 }
                     if cursorScreenCapture == nil { return 420 }
@@ -1408,7 +1419,9 @@ final class CompanionManager: ObservableObject {
                 // Fly the cursor as soon as the tag's closing bracket streams in,
                 // rather than after the stream ends. The final parse below still
                 // decides: if it disagrees, the final point wins.
-                let pointingCapture = cursorScreenCapture
+                // A point-then-draw turn draws the mark, so the blue cursor stays put.
+                let drawFromPointKind = pointThenDrawKind
+                let pointingCapture = drawFromPointKind == nil ? cursorScreenCapture : nil
                 let pointDetector = StreamingPointDetector()
                 let pointingState = TurnPointingState()
                 // Ink out: each closed SHAPE or HIGHLIGHT tag is shown the moment
@@ -1440,14 +1453,18 @@ final class CompanionManager: ObservableObject {
                         // Tags first, then sentences: a tag-first beat line
                         // delivered in one chunk must close its mark before its
                         // sentence is queued, so the mark binds to that sentence.
-                        if let scheduler {
+                        if let scheduler, drawFromPointKind == nil {
                             for drawing in shapeDetector.feed(accumulated: accumulated) {
                                 scheduler.markClosed(drawing)
                             }
                         }
-                        let speakable = SpokenTextSegmenter.speakablePrefix(accumulated)
-                        if let (sentence, _) = speechProgress.advance(speakable: speakable) {
-                            sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: sentence))
+                        // A point-then-draw turn speaks its own sentence once the
+                        // mark is built, not the pointing prompt's "click the...".
+                        if drawFromPointKind == nil {
+                            let speakable = SpokenTextSegmenter.speakablePrefix(accumulated)
+                            if let (sentence, _) = speechProgress.advance(speakable: speakable) {
+                                sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: sentence))
+                            }
                         }
                         if let capture = pointingCapture,
                            let tag = pointDetector.feed(accumulated: accumulated),
@@ -1466,10 +1483,29 @@ final class CompanionManager: ObservableObject {
                 )
                 pointingState.isFinalized = true
 
+                // Circle or arrow request: build the mark from the point reply. The
+                // mark closes before its sentence is queued, so it binds to it and
+                // shows when that sentence starts. With no point ([POINT:none]) the
+                // model's own sentence is spoken and nothing is drawn.
+                var drawnFromPointSentence: String?
+                if let kind = drawFromPointKind, let scheduler, let capture = cursorScreenCapture, !Task.isCancelled {
+                    let reply = PointingTagParser.parse(from: result.text)
+                    if let centre = reply.centerInImagePixels {
+                        let plan = PointThenDraw.plan(
+                            kind: kind,
+                            pointInImagePixels: centre,
+                            label: reply.label,
+                            controlFrameInDisplayPoints: await controlFrameInDisplayPoints(atImagePoint: centre, in: capture),
+                            mapping: screenMapping(for: capture))
+                        scheduler.markClosed(plan.drawing)
+                        drawnFromPointSentence = plan.spokenSentence
+                    }
+                }
+
                 // A tag that closed in the very last chunk. The detector never
                 // returns a tag twice, so this only adds what the stream missed.
                 if let scheduler, !Task.isCancelled {
-                    for drawing in shapeDetector.feed(accumulated: result.text) {
+                    for drawing in drawFromPointKind == nil ? shapeDetector.feed(accumulated: result.text) : [] {
                         scheduler.markClosed(drawing)
                     }
                     scheduler.finishInput()
@@ -1483,7 +1519,7 @@ final class CompanionManager: ObservableObject {
                 }
 
                 let pointing = PointingTagParser.parse(from: result.text)
-                let spokenText = pointing.spokenText
+                let spokenText = drawnFromPointSentence ?? pointing.spokenText
                 if pointing.hasPoint {
                     timer?.mark(.tagParsed)
                     timer?.setPointParsed(true)
@@ -1493,10 +1529,14 @@ final class CompanionManager: ObservableObject {
                 // during streaming), then close the stream so the speaker drains.
                 let remainder = speechProgress.remainder(
                     speakable: SpokenTextSegmenter.speakablePrefix(result.text))
-                if !remainder.isEmpty { sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: remainder)) }
+                if let drawnFromPointSentence {
+                    sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: drawnFromPointSentence))
+                } else if !remainder.isEmpty {
+                    sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: remainder))
+                }
                 sentenceContinuation.finish()
 
-                if let capture = cursorScreenCapture {
+                if drawFromPointKind == nil, let capture = cursorScreenCapture {
                     var clickLocation: CGPoint?
                     switch PointReconciliation.reconcile(
                         early: pointingState.earlyDispatchedImagePoint,
@@ -1959,6 +1999,26 @@ final class CompanionManager: ObservableObject {
         markScheduler?.cancel()
         markScheduler = nil
         speechSynthesizer.onClipStart = nil
+    }
+
+    private func screenMapping(for capture: CompanionScreenCapture) -> ScreenMapping {
+        ScreenMapping(displayFrame: capture.displayFrame,
+                      displayWidthInPoints: capture.displayWidthInPoints,
+                      displayHeightInPoints: capture.displayHeightInPoints,
+                      screenshotWidthInPixels: capture.screenshotWidthInPixels,
+                      screenshotHeightInPixels: capture.screenshotHeightInPixels)
+    }
+
+    /// The Accessibility frame of the control under a point of the screenshot, in
+    /// display-local points, or nil when there is none (no permission, no answer
+    /// within the harvester's budget, no frame). PointThenDraw sizes the ring from it.
+    private func controlFrameInDisplayPoints(atImagePoint point: CGPoint, in capture: CompanionScreenCapture) async -> CGRect? {
+        let mapping = screenMapping(for: capture)
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 0
+        let cgPoint = mapping.cgGlobalPoint(forDisplayLocalPoint: mapping.displayLocalPoint(forImagePoint: point),
+                                            primaryScreenHeight: primaryHeight)
+        guard let frame = await AccessibilityHarvester.frameOfElement(atCGPoint: cgPoint) else { return nil }
+        return mapping.displayLocalRect(forCGGlobalRect: frame, primaryScreenHeight: primaryHeight)
     }
 
     /// Hands marks to the overlay of the display the screenshot was taken of.

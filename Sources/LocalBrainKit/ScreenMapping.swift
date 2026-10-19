@@ -115,6 +115,21 @@ public struct ScreenMapping: Equatable, Sendable {
         return CGPoint(x: appKit.x, y: primaryScreenHeight - appKit.y)
     }
 
+    /// Core Graphics global point (origin top-left of the primary display, y
+    /// down) to display-local point: the inverse of `cgGlobalPoint`. Not
+    /// clamped.
+    public func displayLocalPoint(forCGGlobalPoint point: CGPoint, primaryScreenHeight: CGFloat) -> CGPoint {
+        displayLocalPoint(forGlobalPoint: CGPoint(x: point.x, y: primaryScreenHeight - point.y))
+    }
+
+    /// A Core Graphics global rectangle (an Accessibility frame) as a display-local
+    /// rectangle, top-left origin.
+    public func displayLocalRect(forCGGlobalRect rect: CGRect, primaryScreenHeight: CGFloat) -> CGRect {
+        let topLeft = displayLocalPoint(forCGGlobalPoint: CGPoint(x: rect.minX, y: rect.minY),
+                                        primaryScreenHeight: primaryScreenHeight)
+        return CGRect(x: topLeft.x, y: topLeft.y, width: rect.width, height: rect.height)
+    }
+
     /// Whether a global AppKit point falls on this display.
     public func containsGlobalPoint(_ point: CGPoint) -> Bool {
         displayFrame.contains(point)

@@ -962,6 +962,37 @@ func runSelfTest() -> Never {
           drawPrompt.contains("1152x748") && drawPrompt.contains("[SHAPE:") && drawPrompt.contains("[HIGHLIGHT:")
           && drawPrompt.contains("just outside the thing") && drawPrompt.contains("say what the mark is on"))
 
+    check("draw prompt: the circle grammar is two positions, never sizes",
+          drawPrompt.contains("[SHAPE:circle:cx,cy;ex,ey:label]") && drawPrompt.contains("both pairs are positions, never sizes")
+          && !drawPrompt.contains("rx,ry"))
+    let pointDrawMap = ScreenMapping(displayFrame: CGRect(x: 0, y: 0, width: 2560, height: 1440), displayWidthInPoints: 2560,
+                                     displayHeightInPoints: 1440, screenshotWidthInPixels: 1152, screenshotHeightInPixels: 648)
+    func pointDrawShape(_ plan: PointDrawPlan) -> ShapeTag? {
+        if case .shape(let tag) = plan.drawing { return tag } else { return nil }
+    }
+    let pointDrawCircle = PointThenDraw.plan(kind: .circle, pointInImagePixels: CGPoint(x: 400, y: 300), label: "save button",
+                                             controlFrameInDisplayPoints: nil, mapping: pointDrawMap)
+    check("point then draw: a circle is centred on the point with the default radius, sentence from the label",
+          pointDrawShape(pointDrawCircle)?.kind == .circle
+          && pointDrawShape(pointDrawCircle)?.points == [CGPoint(x: 400, y: 300), CGPoint(x: 430, y: 300)]
+          && pointDrawShape(pointDrawCircle)?.label == "save button"
+          && pointDrawCircle.spokenSentence == "that is the save button, circled.")
+    let pointDrawArrow = PointThenDraw.plan(kind: .arrow, pointInImagePixels: CGPoint(x: 200, y: 300), label: nil,
+                                            controlFrameInDisplayPoints: nil, mapping: pointDrawMap)
+    check("point then draw: the arrow tail goes to the side with more room",
+          pointDrawShape(pointDrawArrow)?.kind == .arrow
+          && pointDrawShape(pointDrawArrow)?.points == [CGPoint(x: 290, y: 300), CGPoint(x: 200, y: 300)])
+    check("point then draw: circle and arrow requests only, flag falls back to the shape tags",
+          DrawingIntent.pointThenDrawKind("circle the save button", pointThenDrawEnabled: true) == .circle
+          && DrawingIntent.pointThenDrawKind("draw an arrow to the gear", pointThenDrawEnabled: true) == .arrow
+          && DrawingIntent.pointThenDrawKind("underline the title", pointThenDrawEnabled: true) == nil
+          && DrawingIntent.pointThenDrawKind("circle the save button", pointThenDrawEnabled: false) == nil)
+    let floorStyle = InkPalette.resolve(preset: .standard, increaseContrast: false, differentiateWithoutColor: false,
+                                        reduceMotion: false, pointsToPixelsScale: 0.45).userInk
+    check("ink floor: the model's copy has a core of at least 3 px at the external display scale",
+          abs((floorStyle.withMinimumCoreWidth(InkTurn.minimumCoreWidthInImagePixels).layers.last?.width ?? 0) - 3) < 1e-9
+          && abs((floorStyle.layers.last?.width ?? 0) - 1.8) < 1e-9)
+
     let markCircle = OverlayDrawing.shape(kind: .circle, points: [CGPoint(x: 300, y: 200), CGPoint(x: 340, y: 200)])
     let markGeometry = MarkGeometryBuilder.geometry(for: markCircle)
     check("mark geometry: a circle is two closed passes, deterministic",
