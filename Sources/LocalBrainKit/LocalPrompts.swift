@@ -131,11 +131,13 @@ public enum LocalPrompts {
     /// as they are on every turn without ink. One sentence says the user marked
     /// the area and to answer about it; then the gesture summary; then, on a
     /// describe turn that carries the close-up, a line about the second image;
-    /// then, when there is an Accessibility block for the marked area, one sentence saying its names and links came straight from the app, and the block.
+    /// then, when there is an Accessibility block for the marked area, one sentence saying its names and links came straight from the app, and the block;
+    /// last, when `markKind` is given, the mark line (describe turns, which pass no Accessibility block).
     public static func inkAddendum(gestureSummary: String,
                                    markerColourName: String,
                                    hasCloseUp: Bool,
-                                   accessibilityBlock: String = "") -> String {
+                                   accessibilityBlock: String = "",
+                                   markKind: InkMarkKind? = nil) -> String {
         var parts = ["the user drew on the screen with a \(markerColourName) marker while speaking, so they are marking an area on purpose. answer about the marked area."]
         let summary = gestureSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         if !summary.isEmpty { parts.append(summary) }
@@ -145,7 +147,26 @@ public enum LocalPrompts {
             parts.append("the names and links in this list were read directly from the app itself, so use them exactly as written rather than reading them off the image.")
             parts.append(elements)
         }
+        if let markKind { parts.append(inkMarkLine(kind: markKind, hasCloseUp: hasCloseUp)) }
         return parts.joined(separator: "\n")
+    }
+
+    /// The system prompt of a describe turn that carries ink. It replaces
+    /// `screenDescribe` and takes no environment line, byte for byte the eval's
+    /// ink prompt (clicky-eval ce_ink.INK_SYSTEM, arm A1FPC).
+    public static let inkDescribe = "you are localclicky. the user marked one thing on their screen. say what that one thing is. begin with \"that's the <name>\". name the exact control, icon, row or word that is marked; use its label if it has one. do not describe the app, the window or anything else on screen. your reply is read aloud: one or two short sentences, all lowercase, no emojis, no markdown, no lists."
+
+    /// One line about where the marked thing is, by the kind of the mark, last
+    /// in the addendum (ce_ink.MARK_LINES and mark_line). The scribble line
+    /// points at the clean close-up only when one is sent.
+    public static func inkMarkLine(kind: InkMarkKind, hasCloseUp: Bool) -> String {
+        switch kind {
+        case .circle: return "the marked thing is inside the ring."
+        case .line: return "the marked thing is directly above the line."
+        case .scribble:
+            return "the marked thing is under the scribble, so it may be hidden in the first image"
+                + (hasCloseUp ? "; the second image shows the same area without the ink." : ".")
+        }
     }
 
     /// Text-only prompt for the fast chat model, used when there's no useful

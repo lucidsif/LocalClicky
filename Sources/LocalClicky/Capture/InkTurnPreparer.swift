@@ -26,6 +26,8 @@ struct InkTurnPackage {
     /// Empty when there was nothing usable under the ink.
     let accessibilityBlock: String
     let markCount: Int
+    /// The one mark's kind, nil unless there is exactly one.
+    let markKind: InkMarkKind?
     /// "yellow", "red" and so on, for the prompt.
     let markerColourName: String
 }
@@ -88,6 +90,7 @@ enum InkTurnPreparer {
                               gestureSummary: analysis.gestureSummary,
                               accessibilityBlock: AccessibilitySummary.summarize(records),
                               markCount: analysis.markCount,
+                              markKind: analysis.singleMarkKind,
                               markerColourName: style.userColourName)
     }
 }

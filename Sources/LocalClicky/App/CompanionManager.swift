@@ -1275,6 +1275,10 @@ final class CompanionManager: ObservableObject {
                 // With ink, the turn's screenshot is the press-time capture with
                 // the stroke composited into it (same size and mapping).
                 let usableInk = useScreen ? inkPackage : nil
+                // A describe turn with ink sends the eval's A1FPC request: the ink
+                // system prompt and mark line, no Accessibility block. Grounding
+                // turns keep theirs.
+                let inkDescribeTurn = usableInk != nil && !wantsGrounding
                 let screenCapture: CompanionScreenCapture?
                 if let usableInk {
                     timer?.setScreenshotCapturedAtPress(true)
@@ -1340,9 +1344,11 @@ final class CompanionManager: ObservableObject {
                     } else {
                         // Describe/answer turn: the default vision model (Moondream),
                         // which is strong at description but doesn't emit coordinates.
-                        systemPrompt = LocalPrompts.screenDescribe(
-                            imageWidthInPixels: capture.screenshotWidthInPixels,
-                            imageHeightInPixels: capture.screenshotHeightInPixels)
+                        systemPrompt = inkDescribeTurn
+                            ? LocalPrompts.inkDescribe
+                            : LocalPrompts.screenDescribe(
+                                imageWidthInPixels: capture.screenshotWidthInPixels,
+                                imageHeightInPixels: capture.screenshotHeightInPixels)
                         model = visionModelName
                     }
                 } else {
@@ -1363,7 +1369,7 @@ final class CompanionManager: ObservableObject {
                 // the model has no clock of its own. Pointing/click turns get the
                 // tight grounding prompt untouched (time is irrelevant + would only
                 // distract the tag output).
-                let systemWithContext = wantsGrounding
+                let systemWithContext = wantsGrounding || inkDescribeTurn
                     ? systemPrompt
                     : systemPrompt + "\n\n" + Self.currentEnvironmentContext()
 
@@ -1373,14 +1379,15 @@ final class CompanionManager: ObservableObject {
                     messages.append(.assistant(exchange.assistantResponse))
                 }
                 // The ink text rides after the user's words, so every system
-                // prompt stays exactly as it is on a turn with no ink.
+                // prompt but the ink describe turn's stays as it is with no ink.
                 var userText = transcript
                 if let usableInk {
                     userText += "\n\n" + LocalPrompts.inkAddendum(
                         gestureSummary: usableInk.gestureSummary,
                         markerColourName: usableInk.markerColourName,
                         hasCloseUp: inkCloseUpAttached,
-                        accessibilityBlock: usableInk.accessibilityBlock)
+                        accessibilityBlock: inkDescribeTurn ? "" : usableInk.accessibilityBlock,
+                        markKind: inkDescribeTurn ? usableInk.markKind : nil)
                 }
                 messages.append(.user(userText, imagesBase64: userImagesBase64))
 

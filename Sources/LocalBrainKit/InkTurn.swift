@@ -22,6 +22,9 @@ public struct InkTurnAnalysis: Equatable, Sendable {
     /// One sentence in plain words, no coordinates.
     public let gestureSummary: String
     public var markCount: Int { analysis.marks.count }
+    /// The kind of the mark when there is exactly one; nil for none (pauses
+    /// only) or several, where the mark line has no single answer.
+    public var singleMarkKind: InkMarkKind? { analysis.marks.count == 1 ? analysis.marks[0].kind : nil }
     /// Mark points in screenshot pixels, ready to composite. A stroke that is
     /// only pauses has one single-point stroke per pause.
     public let strokesInImagePixels: [[CGPoint]]

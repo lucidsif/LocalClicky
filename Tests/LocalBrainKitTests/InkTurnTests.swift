@@ -43,6 +43,7 @@ final class InkTurnTests: XCTestCase {
         let result = try XCTUnwrap(InkTurn.analyze(globalSamples: circle(), mapping: mapping))
         XCTAssertEqual(result.markCount, 1)
         XCTAssertEqual(result.analysis.marks.first?.kind, .circle)
+        XCTAssertEqual(result.singleMarkKind, .circle)
         XCTAssertEqual(result.gestureSummary, "The user drew 1 mark while speaking: circled an area in the center.")
     }
 
