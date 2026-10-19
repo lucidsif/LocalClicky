@@ -41,6 +41,13 @@ public enum ConversationRoute: Equatable, Sendable {
     /// DrawingRouting, and only while the drawing setting is on. Routed to the
     /// grounding model with the shape prompt.
     case screenDraw
+    /// Capture the screen and draw a simple figure on it that marks nothing: a
+    /// tic tac toe board, a box, a smiley. Only produced by DrawingRouting, and
+    /// only while the drawing setting is on.
+    case screenSketch
+    /// Clear what the assistant drew ("clear that"). Only produced by
+    /// DrawingRouting, and only while the drawing setting is on.
+    case clearMarks
     case text
     case browserCommand
     /// Open / launch a local macOS application ("launch spotify", "open the

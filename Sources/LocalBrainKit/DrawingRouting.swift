@@ -6,7 +6,8 @@
 //  outline, underline, highlight or mark something, or "show me where". It
 //  wraps InkRouting (which wraps ConversationRouter) and only changes its
 //  answer when drawing is enabled, the screen is available, and the words ask
-//  for a mark. With drawing off the result is exactly InkRouting's.
+//  for a mark, or for a figure that marks nothing (a sketch), or to clear what
+//  was drawn. With drawing off the result is exactly InkRouting's.
 //
 //  The trigger is deliberately phrase-shaped, not a bare word list: "mark",
 //  "draw" and "circle" are also ordinary words ("bookmark", "a drawer",
@@ -57,9 +58,14 @@ public enum DrawingRouting {
                              drawingEnabled: Bool) -> ConversationRoute {
         let base = InkRouting.route(transcript: transcript, context: context, hasUsableInk: hasUsableInk)
         guard drawingEnabled, context.visionModeSelected, context.screenAvailable else { return base }
-        guard base == .screen || base == .screenPoint || base == .text else { return base }
         let text = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ConversationRouter.wantsClick(text), DrawingIntent.wantsDrawing(text) else { return base }
+        if ClearMarksIntent.wants(text) { return .clearMarks }
+        guard base == .screen || base == .screenPoint || base == .text else { return base }
+        guard !ConversationRouter.wantsClick(text) else { return base }
+        // A sketch is tested before the marks: DrawingIntent matches "draw ... box|arrow|circle"
+        // and would turn "draw a box in the middle of the screen" into a mark of some control.
+        if SketchIntent.figure(text) != nil { return .screenSketch }
+        guard DrawingIntent.wantsDrawing(text) else { return base }
         return .screenDraw
     }
 }

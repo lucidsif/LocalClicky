@@ -209,6 +209,8 @@ final class CompanionManager: ObservableObject {
     private var nextClipIDBase = 1
 
     private var marksClearTask: Task<Void, Never>?
+    /// How long the next marks hold after the speech ends; nil is the palette's own hold. A sketch sets it.
+    private var marksHoldSeconds: Double?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -1248,12 +1250,20 @@ final class CompanionManager: ObservableObject {
                     settleAfterAction()
                     return
                 }
+                if route == .clearMarks {
+                    await handleClearMarks()
+                    settleAfterAction()
+                    return
+                }
 
                 // A click turn grounds the element exactly like a pointing turn
                 // (same grounding model + tag); it just also clicks at the end.
                 let performClick = (route == .screenClick)
                 let wantsDrawing = (route == .screenDraw)
-                let useScreen = (route == .screen || route == .screenPoint || route == .screenClick || wantsDrawing)
+                // A sketch marks nothing: a template figure is composed by the app, a
+                // freeform one is drawn by the grounding model (see Sketch.swift).
+                let wantsSketch = (route == .screenSketch)
+                let useScreen = (route == .screen || route == .screenPoint || route == .screenClick || wantsDrawing || wantsSketch)
                 let wantsPointing = (route == .screenPoint || route == .screenClick)
                 // A drawing turn grounds like a pointing turn: the model's
                 // coordinates are in the full image, so no close-up, a tight
@@ -1274,7 +1284,7 @@ final class CompanionManager: ObservableObject {
                 if !useScreen { claimedPressCapture?.task.cancel() }
                 // With ink, the turn's screenshot is the press-time capture with
                 // the stroke composited into it (same size and mapping).
-                let usableInk = useScreen ? inkPackage : nil
+                let usableInk = (useScreen && !wantsSketch) ? inkPackage : nil
                 // A describe turn with ink is naming (the eval's A1FPC request: the
                 // ink system prompt and mark line, no Accessibility block, no
                 // history) or explain (every other question about the marked area).
@@ -1294,6 +1304,12 @@ final class CompanionManager: ObservableObject {
                 var inkCloseUpAttached = false
                 if let capture = screenCapture {
                     cursorScreenCapture = capture
+                    // A figure with a template is drawn and spoken by the app, with no model call.
+                    if wantsSketch, let plan = sketchPlan(for: transcript, in: capture) {
+                        await showSketch(plan, transcript: transcript, in: capture, timer: timer)
+                        settleAfterAction()
+                        return
+                    }
                     userImagesBase64 = [capture.imageData.base64EncodedString()]
                     // Describe turns also get the close-up. Pointing, clicking and
                     // drawing turns must not: their coordinates refer to the full image.
@@ -1324,6 +1340,11 @@ final class CompanionManager: ObservableObject {
                                 imageHeightInPixels: capture.screenshotHeightInPixels)
                         }
                         model = pointingModel
+                    } else if wantsSketch {
+                        // Freeform sketch (sketchPlan returned nil, so the grounding
+                        // model can draw): its own prompt, in the gateway's 0 to 1000 frame.
+                        systemPrompt = LocalPrompts.screenSketchResponse
+                        model = resolvedGroundingModelName()
                     } else if wantsDrawing {
                         // Drawing turn: the grounding model with the shape
                         // prompt. If the resolved model cannot ground, describe
@@ -1375,7 +1396,7 @@ final class CompanionManager: ObservableObject {
                 // the model has no clock of its own. Pointing/click turns get the
                 // tight grounding prompt untouched (time is irrelevant + would only
                 // distract the tag output).
-                let systemWithContext = wantsGrounding || inkPlan != nil
+                let systemWithContext = wantsGrounding || wantsSketch || inkPlan != nil
                     ? systemPrompt
                     : systemPrompt + "\n\n" + Self.currentEnvironmentContext()
 
@@ -1384,7 +1405,7 @@ final class CompanionManager: ObservableObject {
                 // has none, and after one "i don't see it" every retry was primed
                 // to say it again. A naming turn sends none either, so it is the
                 // measured request on every turn of a session.
-                if InkTurnPolicy.sendsHistory(wantsGrounding: wantsGrounding, plan: inkPlan) {
+                if InkTurnPolicy.sendsHistory(wantsGrounding: wantsGrounding || wantsSketch, plan: inkPlan) {
                     for exchange in conversationHistory {
                         messages.append(.user(exchange.userTranscript))
                         messages.append(.assistant(exchange.assistantResponse))
@@ -1436,6 +1457,8 @@ final class CompanionManager: ObservableObject {
                     if wantsPointing || pointThenDrawKind != nil { return 130 }
                     // Up to three tag-first beat lines: tags are token-heavy.
                     if wantsDrawing { return 260 }
+                    // Up to SketchLimits.maxTags tags and one sentence.
+                    if wantsSketch { return SketchLimits.freeformAnswerMaxTokens }
                     if cursorScreenCapture == nil { return 420 }
                     return 320
                 }()
@@ -1444,12 +1467,12 @@ final class CompanionManager: ObservableObject {
                 // decides: if it disagrees, the final point wins.
                 // A point-then-draw turn draws the mark, so the blue cursor stays put.
                 let drawFromPointKind = pointThenDrawKind
-                let pointingCapture = drawFromPointKind == nil ? cursorScreenCapture : nil
+                let pointingCapture = (drawFromPointKind == nil && !wantsSketch) ? cursorScreenCapture : nil
                 let pointDetector = StreamingPointDetector()
                 let pointingState = TurnPointingState()
                 // Ink out: each closed SHAPE or HIGHLIGHT tag is shown the moment
                 // it closes. Only a drawing turn reads them.
-                let drawingCapture = wantsDrawing ? cursorScreenCapture : nil
+                let drawingCapture = (wantsDrawing || wantsSketch) ? cursorScreenCapture : nil
                 let shapeDetector = StreamingShapeDetector()
                 // Marks wait for their sentence to be spoken: a tag binds to the
                 // next sentence queued after it, and shows when that clip starts.
@@ -1461,6 +1484,7 @@ final class CompanionManager: ObservableObject {
                 defer { scheduler?.finishInput() }
                 if let scheduler, let capture = drawingCapture {
                     startMarkDriver(scheduler, in: capture, timer: timer)
+                    if wantsSketch { marksHoldSeconds = SketchTiming.holdSeconds }
                 }
 
                 timer?.mark(.requestSent)
@@ -1478,13 +1502,15 @@ final class CompanionManager: ObservableObject {
                         // delivered in one chunk must close its mark before its
                         // sentence is queued, so the mark binds to that sentence.
                         if let scheduler, drawFromPointKind == nil {
-                            for drawing in shapeDetector.feed(accumulated: accumulated) {
+                            for drawing in shapeDetector.feed(accumulated: accumulated)
+                            where !wantsSketch || SketchLimits.admits(drawing, alreadyClosed: scheduler.closedCount) {
                                 scheduler.markClosed(drawing)
                             }
                         }
                         // A point-then-draw turn speaks its own sentence once the
                         // mark is built, not the pointing prompt's "click the...".
-                        if drawFromPointKind == nil {
+                        // A sketch speaks at the end, once it is known to hold a tag.
+                        if drawFromPointKind == nil, !wantsSketch {
                             let speakable = SpokenTextSegmenter.speakablePrefix(accumulated)
                             if let (sentence, _) = speechProgress.advance(speakable: speakable) {
                                 sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: sentence))
@@ -1529,11 +1555,14 @@ final class CompanionManager: ObservableObject {
                 // A tag that closed in the very last chunk. The detector never
                 // returns a tag twice, so this only adds what the stream missed.
                 if let scheduler, !Task.isCancelled {
-                    for drawing in drawFromPointKind == nil ? shapeDetector.feed(accumulated: result.text) : [] {
+                    for drawing in drawFromPointKind == nil ? shapeDetector.feed(accumulated: result.text) : []
+                    where !wantsSketch || SketchLimits.admits(drawing, alreadyClosed: scheduler.closedCount) {
                         scheduler.markClosed(drawing)
                     }
                     scheduler.finishInput()
                     timer?.setMarks(scheduler.closedCount)
+                    // A sketch with no valid tag says so instead of reading out the model's words.
+                    if wantsSketch, scheduler.closedCount == 0 { drawnFromPointSentence = SketchLimits.failureSentence }
                 }
 
                 guard !Task.isCancelled else {
@@ -1560,7 +1589,7 @@ final class CompanionManager: ObservableObject {
                 }
                 sentenceContinuation.finish()
 
-                if drawFromPointKind == nil, let capture = cursorScreenCapture {
+                if drawFromPointKind == nil, !wantsSketch, let capture = cursorScreenCapture {
                     var clickLocation: CGPoint?
                     switch PointReconciliation.reconcile(
                         early: pointingState.earlyDispatchedImagePoint,
@@ -1658,6 +1687,55 @@ final class CompanionManager: ObservableObject {
         voiceState = .responding
         do { try await speechSynthesizer.speakText(plan.spokenSummary) }
         catch { print("⚠️ TTS error during browser command: \(error)") }
+    }
+
+    /// What the app draws for a sketch turn, or nil when the grounding model should draw it
+    /// (a figure with no template, with SketchLimits.freeformEnabled on and a grounding model
+    /// available). With that path off the plan is the spoken list of what the app can draw.
+    private func sketchPlan(for transcript: String, in capture: CompanionScreenCapture) -> SketchPlan? {
+        let figure = SketchIntent.figure(transcript)
+        if let figure, let plan = SketchTemplate.plan(figure, imageWidth: capture.screenshotWidthInPixels,
+                                                      imageHeight: capture.screenshotHeightInPixels) {
+            return plan
+        }
+        if SketchLimits.freeformEnabled, LocalModels.isLikelyGroundingCapable(resolvedGroundingModelName()) { return nil }
+        return SketchPlan(drawings: [], spokenSentence: SketchTemplate.unsupportedSentence)
+    }
+
+    /// Draws a template sketch and speaks its one sentence. Every mark closes before the
+    /// sentence is queued, so all of them show when that clip starts (SpeechMarkScheduler);
+    /// the figure then holds SketchTiming.holdSeconds after the speech.
+    private func showSketch(_ plan: SketchPlan, transcript: String, in capture: CompanionScreenCapture, timer: TurnTimer?) async {
+        let scheduler = SpeechMarkSchedulerBox<InkDrawing>(firstClipID: nextClipIDBase)
+        nextClipIDBase += 100_000
+        startMarkDriver(scheduler, in: capture, timer: timer)
+        marksHoldSeconds = SketchTiming.holdSeconds
+        for drawing in plan.drawings { scheduler.markClosed(drawing) }
+        let clipID = scheduler.sentenceQueued()
+        scheduler.finishInput()
+        timer?.setMarks(scheduler.closedCount)
+
+        conversationHistory.append((userTranscript: transcript, assistantResponse: plan.spokenSentence))
+        if conversationHistory.count > 10 {
+            conversationHistory.removeFirst(conversationHistory.count - 10)
+        }
+        lastSpokenAnswer = plan.spokenSentence
+        previousTurnUsedScreen = true
+
+        voiceState = .responding
+        do { try await speechSynthesizer.speakText(plan.spokenSentence, clipID: clipID) }
+        catch { print("⚠️ TTS error during sketch: \(error)") }
+    }
+
+    /// "clear that": takes down what the assistant drew and says so. A key press
+    /// already clears the marks, so this is the spoken confirmation of that.
+    private func handleClearMarks() async {
+        marksClearTask?.cancel()
+        marksClearTask = nil
+        assistantMarks.clearNow()
+        voiceState = .responding
+        do { try await speechSynthesizer.speakText("cleared.") }
+        catch { print("⚠️ TTS error during clear: \(error)") }
     }
 
     /// Returns the companion to idle after a deterministic action (browser, app
@@ -2018,6 +2096,7 @@ final class CompanionManager: ObservableObject {
     /// Barge-in or a new press: marks still waiting for their sentence are
     /// dropped and never shown.
     private func cancelPendingMarks() {
+        marksHoldSeconds = nil
         markDriverTask?.cancel()
         markDriverTask = nil
         markScheduler?.cancel()
@@ -2075,7 +2154,9 @@ final class CompanionManager: ObservableObject {
             }
             guard let self, !Task.isCancelled else { return }
             let fade = self.inkTrail.style.fade
-            self.assistantMarks.scheduleClear(hold: fade.hold, fade: fade.fade)
+            let hold = self.marksHoldSeconds ?? fade.hold
+            self.marksHoldSeconds = nil
+            self.assistantMarks.scheduleClear(hold: hold, fade: fade.fade)
         }
     }
 

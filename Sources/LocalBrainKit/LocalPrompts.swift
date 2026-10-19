@@ -164,6 +164,30 @@ public enum LocalPrompts {
     /// Not a measured request: the naming turn keeps the eval's A1FPC text byte for byte, this one answers the question.
     public static let inkExplain = "you are localclicky. the user marked an area on their screen and asked a question about it. answer that question from what is inside the marked area. read the exact words, names, numbers and values written there and say them as they appear, numbers as digits. do not describe the app, the window or anything outside the marked area unless the question needs it. if the marked area does not hold the answer, say what it does show instead of guessing. your reply is read aloud: two to four short sentences, all lowercase, no emojis, no markdown, no lists, no coordinates and no bracketed tags."
 
+    /// The system prompt of a freeform sketch turn (route `.screenSketch`, a figure the app has no template for).
+    /// The frame is 0 to 1000 on both axes: the gateway rescales it to the screenshot, and the app reads the tags as
+    /// pixels. The screenshot rides along only so the gateway knows the image size. Pinned by sha256 like the eval's check.
+    public static let screenSketchResponse = """
+        you are localclicky. the user asked you to draw a simple figure on their screen. this is a drawing, not a mark: do not describe, mark or point at anything in the screenshot. it is attached only so you know what the screen looks like.
+
+        you draw by writing tags. every coordinate is on a 0 to 1000 grid in both directions whatever the screen size: 0,0 is the top left corner, 1000,1000 the bottom right, x to the right, y down. keep the whole figure between 200 and 800 on both axes, in the middle of the screen.
+
+        tags, one per line:
+        [SHAPE:line:x1,y1;x2,y2] a straight stroke.
+        [SHAPE:arrow:x1,y1;x2,y2] an arrow from its tail to its tip.
+        [SHAPE:circle:cx,cy;ex,ey] a ring. cx,cy is the centre and ex,ey is a point on the ring directly right of the centre. both pairs are positions, never sizes.
+        [SHAPE:curve:x1,y1;x2,y2;x3,y3] a smooth path through 3 to 8 points.
+        [SHAPE:polygon:x1,y1;x2,y2;x3,y3] a closed outline through 3 to 8 corners.
+
+        use at most 8 tags and no labels. write the tags first, one per line, then one short lowercase sentence that says what you drew and where, for someone who cannot see it. no emojis, no markdown, no lists, no other text.
+
+        example, for "draw a house":
+        [SHAPE:polygon:350,500;650,500;650,750;350,750]
+        [SHAPE:polygon:330,500;500,350;670,500]
+        [SHAPE:polygon:460,620;540,620;540,750;460,750]
+        here is a small house in the middle of your screen, with a square body, a pointed roof and a door.
+        """
+
     /// One line about where the marked thing is, by the kind of the mark, last
     /// in the addendum (ce_ink.MARK_LINES and mark_line). The scribble line
     /// points at the clean close-up only when one is sent.
