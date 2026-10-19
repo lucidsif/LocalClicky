@@ -225,4 +225,42 @@ final class InkImageTests: XCTestCase {
         XCTAssertGreaterThan(pixels.rgb(localX, localY).0, 200)
         XCTAssertLessThan(pixels.rgb(localX, localY).1, 80)
     }
+
+    // MARK: - Minimum core width
+
+    private func assertWidths(_ style: InkStyle, _ expected: [Double], file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(style.layers.count, expected.count, file: file, line: line)
+        for (layer, width) in zip(style.layers, expected) {
+            XCTAssertEqual(layer.width, width, accuracy: 1e-9, file: file, line: line)
+        }
+    }
+
+    func testMinimumCoreWidthScalesEveryLayerByTheSameFactor() {
+        let external = InkPalette.resolve(preset: .standard, increaseContrast: false,
+                                          differentiateWithoutColor: false, reduceMotion: false,
+                                          pointsToPixelsScale: 0.45).userInk
+        // Before: white 4.5, dark 3.15, core 1.8 px. The core is raised to 3, so x 5/3.
+        assertWidths(external, [4.5, 3.15, 1.8])
+        let floored = external.withMinimumCoreWidth(3)
+        assertWidths(floored, [7.5, 5.25, 3.0])
+        // Colours are untouched.
+        XCTAssertEqual(floored.layers.map(\.red), external.layers.map(\.red))
+    }
+
+    func testMinimumCoreWidthLeavesAWideEnoughStyleAlone() {
+        let builtIn = InkPalette.resolve(preset: .standard, increaseContrast: false,
+                                         differentiateWithoutColor: false, reduceMotion: false,
+                                         pointsToPixelsScale: 0.76).userInk
+        XCTAssertGreaterThanOrEqual(builtIn.layers.last!.width, 3)
+        XCTAssertEqual(builtIn.withMinimumCoreWidth(3), builtIn)
+        XCTAssertEqual(InkStyle(layers: []).withMinimumCoreWidth(3), InkStyle(layers: []))
+    }
+
+    func testTheOnScreenStyleIsNotFloored() {
+        // The floor is applied to the model's copy only; the resolved style the
+        // overlay draws keeps the 4 pt core at scale 1.
+        let onScreen = InkPalette.resolve(preset: .standard, increaseContrast: false,
+                                          differentiateWithoutColor: false, reduceMotion: false).userInk
+        XCTAssertEqual(onScreen.layers.map(\.width), [10, 7, 4])
+    }
 }

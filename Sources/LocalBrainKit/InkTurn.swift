@@ -8,7 +8,8 @@
 //             mapped to screenshot pixels, with the points to probe for
 //             Accessibility;
 //    render:  the stroke composited onto the press-time JPEG, and the close-up
-//             cut around it.
+//             cut around it from the clean capture, so the ink never hides
+//             the target in the close-up.
 //  `analyze` is cheap. `render` decodes and encodes JPEGs, so the app runs it
 //  off the main thread.
 //
@@ -66,13 +67,24 @@ public enum InkTurn {
                                probePointsInDisplayPoints: InkAccessibilityGrid.probePoints(for: analysis))
     }
 
+    /// The thinnest core, in screenshot pixels, the model's copy of the ink may
+    /// have. On an external display the screenshot is scaled by about 0.45, so
+    /// the 4 pt core is 1.8 px there and the 9B cannot see a thin underline
+    /// (0 of 15 external-scale rows hit). The on-screen ink does not change.
+    public static let minimumCoreWidthInImagePixels: Double = 3
+
     /// The composited screenshot and the close-up. Nil if the JPEG cannot be
     /// decoded or encoded. The crop is nil only when it alone fails.
+    ///
+    /// The composite is the model's copy of the ink, so its core is widened to
+    /// `minimumCoreWidthInImagePixels` (casings scale with it). The close-up is
+    /// cut from the clean `jpegData`, not from the composite: a scribble over
+    /// the target would otherwise hide it in both images.
     public static func render(jpegData: Data, analysis: InkTurnAnalysis, style: InkStyle) -> InkTurnImages? {
         guard let composited = InkImage.compositeInk(jpegData: jpegData,
                                                      strokesInImagePixels: analysis.strokesInImagePixels,
-                                                     style: style) else { return nil }
-        let crop = InkImage.cropAround(jpegData: composited, rectInImagePixels: analysis.boundsInImagePixels)
+                                                     style: style.withMinimumCoreWidth(minimumCoreWidthInImagePixels)) else { return nil }
+        let crop = InkImage.cropAround(jpegData: jpegData, rectInImagePixels: analysis.boundsInImagePixels)
         return InkTurnImages(compositedJPEG: composited, cropJPEG: crop?.jpegData)
     }
 }

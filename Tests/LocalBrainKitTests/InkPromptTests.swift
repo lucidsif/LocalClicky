@@ -18,6 +18,11 @@ final class InkPromptTests: XCTestCase {
         XCTAssertFalse(without.contains("second image"))
     }
 
+    func testCloseUpLineSaysTheSecondImageHasNoInk() {
+        let text = LocalPrompts.inkAddendum(gestureSummary: summary, markerColourName: "yellow", hasCloseUp: true)
+        XCTAssertTrue(text.contains("the second image is a close-up of the marked area, shown without the ink."))
+    }
+
     func testMarkerColourFollowsThePreset() {
         let red = LocalPrompts.inkAddendum(gestureSummary: summary, markerColourName: "red", hasCloseUp: false)
         XCTAssertTrue(red.contains("a red marker"))

@@ -88,7 +88,7 @@ public enum LocalPrompts {
         you draw by writing tags. reply in 1 to 3 lines. each line is one tag, then one short lowercase spoken sentence about that mark. say what the mark is on, by name, because the user may not be looking. no emojis, no markdown, no lists.
 
         tags:
-        [SHAPE:circle:cx,cy;rx,ry:label] a ring. the first point is the centre, the second is one point on the ring. keep the ring just outside the thing, never through it.
+        [SHAPE:circle:cx,cy;ex,ey:label] a ring. cx,cy is the centre. ex,ey is a point on the ring, directly right of the centre. both pairs are positions, never sizes. keep the ring just outside the thing, never through it.
         [SHAPE:arrow:x1,y1;x2,y2:label] an arrow from its tail to its tip. the tip touches the target.
         [SHAPE:line:x1,y1;x2,y2:label] a straight stroke, for example an underline along the bottom of a word.
         [SHAPE:curve:x1,y1;x2,y2;x3,y3:label] a smooth path through 3 to 8 points.
@@ -139,7 +139,7 @@ public enum LocalPrompts {
         var parts = ["the user drew on the screen with a \(markerColourName) marker while speaking, so they are marking an area on purpose. answer about the marked area."]
         let summary = gestureSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         if !summary.isEmpty { parts.append(summary) }
-        if hasCloseUp { parts.append("the second image is a close-up of the marked area.") }
+        if hasCloseUp { parts.append("the second image is a close-up of the marked area, shown without the ink.") }
         let elements = accessibilityBlock.trimmingCharacters(in: .whitespacesAndNewlines)
         if !elements.isEmpty {
             parts.append("the names and links in this list were read directly from the app itself, so use them exactly as written rather than reading them off the image.")

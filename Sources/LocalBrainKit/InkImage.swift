@@ -43,6 +43,18 @@ public struct InkStyle: Equatable, Sendable {
     public init(layers: [InkStrokeLayer]) {
         self.layers = layers
     }
+
+    /// The same style with every layer scaled up so the core (the last layer,
+    /// painted on top) is at least `minimumCoreWidth` wide. The casings grow by
+    /// the same factor, so the look is kept. A style whose core is already wide
+    /// enough, or has no usable core, comes back unchanged.
+    public func withMinimumCoreWidth(_ minimumCoreWidth: Double) -> InkStyle {
+        guard let core = layers.last?.width, core > 0, core < minimumCoreWidth else { return self }
+        let factor = minimumCoreWidth / core
+        var widened = self
+        for index in widened.layers.indices { widened.layers[index].width *= factor }
+        return widened
+    }
 }
 
 public struct InkCrop: Equatable, Sendable {

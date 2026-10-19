@@ -95,9 +95,19 @@ final class DrawingRoutingTests: XCTestCase {
         XCTAssertTrue(prompt.contains("1152x748"))
         XCTAssertTrue(prompt.contains("[SHAPE:"))
         XCTAssertTrue(prompt.contains("[HIGHLIGHT:"))
-        XCTAssertTrue(prompt.contains("the first point is the centre, the second is one point on the ring"))
+        XCTAssertTrue(prompt.contains("ex,ey is a point on the ring, directly right of the centre"))
         XCTAssertTrue(prompt.contains("just outside the thing"))
         XCTAssertTrue(prompt.contains("say what the mark is on"))
+    }
+
+    func testCircleGrammarCannotBeReadAsRadii() {
+        // The 9B read `rx,ry` as radii (39 of 90 eval rows). The second pair is a
+        // position on the ring, and the prompt says so in the grammar line.
+        let prompt = LocalPrompts.screenDrawResponse(imageWidthInPixels: 1152, imageHeightInPixels: 748)
+        XCTAssertTrue(prompt.contains("[SHAPE:circle:cx,cy;ex,ey:label]"))
+        XCTAssertTrue(prompt.contains("ex,ey is a point on the ring, directly right of the centre"))
+        XCTAssertTrue(prompt.contains("both pairs are positions, never sizes"))
+        XCTAssertFalse(prompt.contains("rx,ry"))
     }
 
     func testDrawPromptsExampleParsesAndHasNoDashesOrEmoji() {
