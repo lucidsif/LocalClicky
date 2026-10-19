@@ -141,7 +141,7 @@ public enum LocalPrompts {
         var parts = ["the user drew on the screen with a \(markerColourName) marker while speaking, so they are marking an area on purpose. answer about the marked area."]
         let summary = gestureSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         if !summary.isEmpty { parts.append(summary) }
-        if hasCloseUp { parts.append("the second image is a close-up of the marked area, shown without the ink.") }
+        if hasCloseUp { parts.append("the second image is a close-up of the marked area.") }
         let elements = accessibilityBlock.trimmingCharacters(in: .whitespacesAndNewlines)
         if !elements.isEmpty {
             parts.append("the names and links in this list were read directly from the app itself, so use them exactly as written rather than reading them off the image.")
