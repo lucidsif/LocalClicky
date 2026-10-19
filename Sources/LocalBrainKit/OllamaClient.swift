@@ -304,32 +304,25 @@ public final class OllamaClient: @unchecked Sendable {
 
     // MARK: - Streaming chat
 
-    /// Sends one chat turn and streams the response. `onText` is invoked with the
-    /// accumulated text so far (not deltas) each time new tokens arrive — the same
-    /// ergonomics the rest of LocalClicky already uses for progressive display.
-    ///
-    /// - Parameters:
-    ///   - model: an installed Ollama model name.
-    ///   - messages: the full prompt (system + history + current user turn).
-    ///   - temperature: sampling temperature.
-    ///   - maxTokens: hard cap on generated tokens (nil = model default).
-    ///   - keepAlive: how long Ollama keeps the model resident after the call.
-    ///     "10m" keeps it warm between questions so the next answer is instant.
-    ///   - contextWindow: num_ctx for the model. Ollama's default (4096) can be
-    ///     overrun by a screenshot plus several turns of history, which 400s the
-    ///     request. A roomier, *consistent* value avoids that — and it must be the
-    ///     same on every call (warm-up included), or Ollama reloads the model and
-    ///     the warm-up is wasted.
-    @discardableResult
-    public func streamChat(
+    /// The HTTP header that tells the gateway what kind of turn this is, so it can
+    /// route it (studio:clicky sends `ink-describe` turns to a different model).
+    public static let turnHeaderName = "X-Clicky-Turn"
+    /// The one turn kind that sends the header: the user marked something and asks what it is.
+    public static let inkDescribeTurn = "ink-describe"
+
+    /// Builds the `/api/chat` request. `turn` is sent as `X-Clicky-Turn` when
+    /// non-nil; every other turn sends no such header. Pure + static so a unit
+    /// test can inspect the request without a server.
+    static func chatRequest(
+        baseURL: URL,
         model: String,
         messages: [OllamaChatMessage],
-        temperature: Double = 0.7,
-        maxTokens: Int? = nil,
-        keepAlive: String = "10m",
-        contextWindow: Int = 8192,
-        onText: @escaping @Sendable (String) -> Void
-    ) async throws -> OllamaChatResult {
+        temperature: Double,
+        maxTokens: Int?,
+        keepAlive: String,
+        contextWindow: Int,
+        turn: String?
+    ) throws -> URLRequest {
         var requestOptions: [String: Any] = ["temperature": temperature, "num_ctx": contextWindow]
         if let maxTokens { requestOptions["num_predict"] = maxTokens }
 
@@ -352,7 +345,43 @@ public final class OllamaClient: @unchecked Sendable {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let turn { request.setValue(turn, forHTTPHeaderField: turnHeaderName) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    /// Sends one chat turn and streams the response. `onText` is invoked with the
+    /// accumulated text so far (not deltas) each time new tokens arrive — the same
+    /// ergonomics the rest of LocalClicky already uses for progressive display.
+    ///
+    /// - Parameters:
+    ///   - model: an installed Ollama model name.
+    ///   - messages: the full prompt (system + history + current user turn).
+    ///   - temperature: sampling temperature.
+    ///   - maxTokens: hard cap on generated tokens (nil = model default).
+    ///   - keepAlive: how long Ollama keeps the model resident after the call.
+    ///     "10m" keeps it warm between questions so the next answer is instant.
+    ///   - contextWindow: num_ctx for the model. Ollama's default (4096) can be
+    ///     overrun by a screenshot plus several turns of history, which 400s the
+    ///     request. A roomier, *consistent* value avoids that — and it must be the
+    ///     same on every call (warm-up included), or Ollama reloads the model and
+    ///     the warm-up is wasted.
+    ///   - turn: sent as the `X-Clicky-Turn` header when non-nil (only ink
+    ///     describe turns pass one); nil sends no header.
+    @discardableResult
+    public func streamChat(
+        model: String,
+        messages: [OllamaChatMessage],
+        temperature: Double = 0.7,
+        maxTokens: Int? = nil,
+        keepAlive: String = "10m",
+        contextWindow: Int = 8192,
+        turn: String? = nil,
+        onText: @escaping @Sendable (String) -> Void
+    ) async throws -> OllamaChatResult {
+        let request = try Self.chatRequest(
+            baseURL: baseURL, model: model, messages: messages, temperature: temperature,
+            maxTokens: maxTokens, keepAlive: keepAlive, contextWindow: contextWindow, turn: turn)
 
         let requestStartDate = Date()
 

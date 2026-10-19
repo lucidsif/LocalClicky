@@ -1455,6 +1455,7 @@ final class CompanionManager: ObservableObject {
                     maxTokens: answerMaxTokens,
                     keepAlive: hardwareRecommendation.keepAlive,
                     contextWindow: contextWindow(forModel: model),
+                    turn: inkDescribeTurn ? OllamaClient.inkDescribeTurn : nil,
                     onText: { accumulated in
                         timer?.mark(.firstToken)
                         // Tags first, then sentences: a tag-first beat line
