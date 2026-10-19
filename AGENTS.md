@@ -60,12 +60,25 @@ look something up online, and is clearly flagged ("checking the web…").
   - **App launch**: `AppCommandPlanner` (NL → app name, pure) + `LocalAppLauncher`
     (Launch Services + a scan of the Applications folders → opens an installed app).
   - **Clipboard**: "copy your answer" writes the last spoken answer to `NSPasteboard`.
+- **Ink turns**: `InkTurnPolicy` splits a describe turn with ink into *naming* ("what
+  is this?", the measured `inkDescribe` request, header `ink-describe`, no history or
+  Accessibility block) and *explain* (everything else about the marked area, prompt
+  `inkExplain`, header `ink-explain`, with the Accessibility block and history).
+  `inkDescribe` and the three fixed strings of `inkAddendum` stay byte for byte: the
+  clicky-eval harness parses `inkAddendum`, so add no literal lines inside it.
+- **Sketches**: with drawing on, `DrawingRouting` sends "draw tic tac toe on the screen"
+  to `.screenSketch` (and "clear that" to `.clearMarks`) before the mark patterns.
+  `SketchTemplate` draws named figures with no model call; other figures go to the
+  grounding model (`screenSketchResponse`) behind `SketchLimits.freeformEnabled`. A
+  sketch holds 10 s (`SketchTiming.holdSeconds`).
 - **Pointing**: on a `.screenPoint` turn the grounding model emits a tag —
   `[POINT:x,y:label]`, qwen2.5‑vl's attribute form `[POINT x="x" y="y"]`, or a bare
   box — which `PointingTagParser` reduces to a center point in screenshot‑pixel
   space; `CompanionManager` maps that to a global AppKit coordinate; `BlueCursorView`
   animates the cursor. Unchanged overlay. (Use a directive prompt — `screenPointResponse`
   — to keep the tag‑return rate high; the conversational prompt drops it ~half the time.)
+  A request that names a window or app (`PointingTarget`) gets `windowTargetLine` after
+  the user's words; the system prompt is unchanged. Grounding turns send no history.
 
 See `docs/ARCHITECTURE.md` for the full pipeline.
 
@@ -78,6 +91,7 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 | `Sources/LocalBrainKit/LocalPrompts.swift` | System prompts (with LocalClicky identity) for screen / text / onboarding. |
 | `Sources/LocalBrainKit/ConversationRouter.swift` | Per‑turn routing: clipboard / app‑launch / browser command vs screen vs text. |
 | `Sources/LocalBrainKit/Ink*.swift`, `ScreenMapping.swift`, `GestureSummary.swift`, `AccessibilitySummary.swift` | Ink in, all pure and unit‑tested: `InkPalette` (presets and the resolved three‑pass style, timings, cursor outline), `InkStroke` (jiggle, dwells reported at 0.35 s, marks split at 0.6 s), `AccessibilityTreeWalk` (bounded window walk + link address lookup), `InkTurn` (analyse + composite + close‑up), `InkRouting` (ink forces a screen turn), `InkAccessibilityGrid` (AX probe points), `ScreenMapping` (pixel / display / global / CG spaces). Ink out: `SpeechMarkScheduler` times each mark to the clip that speaks its sentence (`SpeechSynthesizing.onClipStart`). |
+| `Sources/LocalBrainKit/InkTurnPolicy.swift`, `PointingTarget.swift`, `Sketch.swift` | Pure and unit‑tested: naming vs explain for an ink turn (`InkQuestion`), whether a pointing request names a window, and the sketch turn (`SketchIntent`, `ClearMarksIntent`, `SketchTemplate`, `SketchLimits`, `SketchTiming`). The prompts `inkExplain`, `windowTargetLine` and `screenSketchResponse` are pinned by sha256 in the tests; clicky-eval pins the same strings. |
 | `Sources/LocalBrainKit/PointThenDraw.swift` | Circle and arrow requests are drawn by the app from the grounding model's `[POINT]` (point route prompt), not from a model-written SHAPE tag: ring radius from the Accessibility frame under the point (at most 300 x 120 pt) else a named default, arrow tail toward the side with more room. Line, curve, polygon and highlight keep the shape-tag route, and `defaults write … drawCircleArrowWithModelShapeTags -bool YES` sends circle and arrow back to it for the eval. Placeholder radius and arrow length are set from DEV. The model's copy of the ink has a 3 px core floor (`InkTurn.minimumCoreWidthInImagePixels`) and its close-up is cut from the clean capture. |
 | `Sources/LocalBrainKit/SpokenTextSegmenter.swift` | Splits a streaming answer into speakable sentences (skips the `[POINT]` tag). |
 | `Sources/LocalBrainKit/BrowserCommandPlanner.swift` | Maps a spoken command → concrete browser URLs (known‑site table, Gmail compose). |

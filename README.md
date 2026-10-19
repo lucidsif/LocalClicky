@@ -146,6 +146,23 @@ scripts/release.sh            # build + DMG + publish the GitHub Release (mainta
   export?"*, *"explain this error."*
 - **Ask anything else** (no screenshot needed): *"what's 12 times 8?"*, *"write me
   a haiku about tabs"*, follow-ups like *"now add two to that."*
+- **Mark the screen and ask** (hold the keys and draw a circle, a line or a scribble
+  on the thing while you speak): *"what is this?"* names it ("that's the ..."), one
+  short answer. Any other question about the marked area is read from inside it:
+  *"go into detail"*, *"what does this say"*, *"how many lines changed here"* quote
+  the exact words and numbers, in two to four sentences.
+- **Find a window or an app:** *"point out where the chat window is"*, *"point at
+  the mail app"* flies the cursor to the middle of that window's title bar. Each
+  pointing request is its own turn: it does not carry earlier answers along.
+- **Ask it to draw** (turn on **Let Clicky draw (beta)** in the panel): *"draw tic tac
+  toe on the screen"* puts a board in the middle of the screen, with an x in the
+  centre, an o in the top left and an x in the bottom right, and says so out loud.
+  It also draws a box, line, arrow, circle, triangle, star, smiley, cross or check
+  mark (*"draw a smiley face"*); anything else (*"draw a house"*) is drawn by the
+  grounding model, at most eight strokes. The figure stays 10 seconds after it
+  finishes speaking; say *"clear that"* (or press the keys again) to take it down.
+  Words that point at something on the screen (*"draw a box around the error"*,
+  *"circle the save button"*) still mark that thing instead.
 - **Get an answer as text** beside the cursor: *"give me Martin Luther King's
   birthday in text"*, *"give text."* — a tight, honest answer in the blue bubble.
 - **Look something up online** (the one opt-in internet feature): *"what's the

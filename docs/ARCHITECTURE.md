@@ -71,6 +71,35 @@ is HTTP to a local Ollama server on `127.0.0.1:11434`.
 For an **action** (step 4), the turn skips inference entirely and is resolved by
 deterministic rules — see [Actions](#actions).
 
+### Ink, window pointing and sketches
+
+Three refinements ride on the routes above; each decision is a pure function in
+`LocalBrainKit` so it is unit‑tested without the app.
+
+- **Marked area, naming vs explain** (`InkTurnPolicy`, `InkQuestion`): a describe
+  turn with ink is *naming* when the words are only "what is this?" and its narrow
+  variants, otherwise *explain*. Naming is the measured request (`inkDescribe`, the
+  `X-Clicky-Turn: ink-describe` header, no Accessibility block, no history).
+  Explain answers the question from inside the marked area (`inkExplain`,
+  `X-Clicky-Turn: ink-explain`, with the Accessibility block and history), so
+  "go into detail" quotes the numbers instead of repeating the name.
+- **Window pointing** (`PointingTarget`): a pointing or click request that names a
+  window or app and no control gets `LocalPrompts.windowTargetLine` after the user's
+  words; the point system prompt is unchanged. Grounding turns (point, click, draw)
+  send no history.
+- **Sketches** (`DrawingRouting` → `.screenSketch`, only with drawing on):
+  `SketchIntent` finds a figure to draw that marks nothing; it is tested before the
+  mark patterns and returns nil when the words name a target ("around the error",
+  "it"). `SketchTemplate` composes tic tac toe, box, line, arrow, circle, triangle,
+  star, smiley, cross and check in screenshot pixels with no model call, and the one
+  sentence it speaks names the figure (and every tic tac toe move) for anyone who
+  cannot see the overlay. Any other figure is a freeform sketch: the grounding model
+  writes up to `SketchLimits.maxTags` tags with `screenSketchResponse` (0 to 1000
+  frame, rescaled by the gateway), and `SketchLimits.freeformEnabled` turns that path
+  off with one line. A sketch holds `SketchTiming.holdSeconds` (10 s) after its
+  speech instead of the 1.5 s of a mark; a key press or "clear that" (`.clearMarks`)
+  ends it.
+
 ## Choosing your models
 
 The defaults (`llama3.2:3b` text, `qwen2.5vl:3b` vision) are tuned for a 16 GB Mac,
