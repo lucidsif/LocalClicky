@@ -1275,10 +1275,13 @@ final class CompanionManager: ObservableObject {
                 // With ink, the turn's screenshot is the press-time capture with
                 // the stroke composited into it (same size and mapping).
                 let usableInk = useScreen ? inkPackage : nil
-                // A describe turn with ink sends the eval's A1FPC request: the ink
-                // system prompt and mark line, no Accessibility block. Grounding
-                // turns keep theirs.
-                let inkDescribeTurn = usableInk != nil && !wantsGrounding
+                // A describe turn with ink is naming (the eval's A1FPC request: the
+                // ink system prompt and mark line, no Accessibility block, no
+                // history) or explain (every other question about the marked area).
+                // Grounding turns keep theirs. See InkTurnPolicy.
+                let inkPlan = InkTurnPolicy.plan(transcript: transcript, hasUsableInk: usableInk != nil,
+                                                 wantsGrounding: wantsGrounding)
+                if let inkPlan { timer?.setRoute(String(describing: route) + "+ink-\(inkPlan.kind)") }
                 let screenCapture: CompanionScreenCapture?
                 if let usableInk {
                     timer?.setScreenshotCapturedAtPress(true)
@@ -1344,11 +1347,14 @@ final class CompanionManager: ObservableObject {
                     } else {
                         // Describe/answer turn: the default vision model (Moondream),
                         // which is strong at description but doesn't emit coordinates.
-                        systemPrompt = inkDescribeTurn
-                            ? LocalPrompts.inkDescribe
-                            : LocalPrompts.screenDescribe(
+                        switch inkPlan?.kind {
+                        case .naming: systemPrompt = LocalPrompts.inkDescribe
+                        case .explain: systemPrompt = LocalPrompts.inkExplain
+                        case nil:
+                            systemPrompt = LocalPrompts.screenDescribe(
                                 imageWidthInPixels: capture.screenshotWidthInPixels,
                                 imageHeightInPixels: capture.screenshotHeightInPixels)
+                        }
                         model = visionModelName
                     }
                 } else {
@@ -1369,15 +1375,16 @@ final class CompanionManager: ObservableObject {
                 // the model has no clock of its own. Pointing/click turns get the
                 // tight grounding prompt untouched (time is irrelevant + would only
                 // distract the tag output).
-                let systemWithContext = wantsGrounding || inkDescribeTurn
+                let systemWithContext = wantsGrounding || inkPlan != nil
                     ? systemPrompt
                     : systemPrompt + "\n\n" + Self.currentEnvironmentContext()
 
                 var messages: [OllamaChatMessage] = [.system(systemWithContext)]
                 // A grounding turn sends no history: the measured pointing request
                 // has none, and after one "i don't see it" every retry was primed
-                // to say it again.
-                if !wantsGrounding {
+                // to say it again. A naming turn sends none either, so it is the
+                // measured request on every turn of a session.
+                if InkTurnPolicy.sendsHistory(wantsGrounding: wantsGrounding, plan: inkPlan) {
                     for exchange in conversationHistory {
                         messages.append(.user(exchange.userTranscript))
                         messages.append(.assistant(exchange.assistantResponse))
@@ -1395,8 +1402,8 @@ final class CompanionManager: ObservableObject {
                         gestureSummary: usableInk.gestureSummary,
                         markerColourName: usableInk.markerColourName,
                         hasCloseUp: inkCloseUpAttached,
-                        accessibilityBlock: inkDescribeTurn ? "" : usableInk.accessibilityBlock,
-                        markKind: inkDescribeTurn ? usableInk.markKind : nil)
+                        accessibilityBlock: (inkPlan?.sendsAccessibilityBlock ?? true) ? usableInk.accessibilityBlock : "",
+                        markKind: inkPlan != nil ? usableInk.markKind : nil)
                 }
                 messages.append(.user(userText, imagesBase64: userImagesBase64))
 
@@ -1464,7 +1471,7 @@ final class CompanionManager: ObservableObject {
                     maxTokens: answerMaxTokens,
                     keepAlive: hardwareRecommendation.keepAlive,
                     contextWindow: contextWindow(forModel: model),
-                    turn: inkDescribeTurn ? OllamaClient.inkDescribeTurn : nil,
+                    turn: inkPlan?.turnHeader,
                     onText: { accumulated in
                         timer?.mark(.firstToken)
                         // Tags first, then sentences: a tag-first beat line

@@ -14,6 +14,11 @@ final class ChatTurnHeaderTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "X-Clicky-Turn"), "ink-describe")
     }
 
+    func testInkExplainTurnCarriesTheHeader() throws {
+        let request = try request(turn: OllamaClient.inkExplainTurn)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Clicky-Turn"), "ink-explain")
+    }
+
     func testOtherTurnsSendNoHeader() throws {
         let request = try request(turn: nil)
         XCTAssertNil(request.value(forHTTPHeaderField: "X-Clicky-Turn"))

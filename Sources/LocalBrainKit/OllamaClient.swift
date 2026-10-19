@@ -307,8 +307,10 @@ public final class OllamaClient: @unchecked Sendable {
     /// The HTTP header that tells the gateway what kind of turn this is, so it can
     /// route it (studio:clicky sends `ink-describe` turns to a different model).
     public static let turnHeaderName = "X-Clicky-Turn"
-    /// The one turn kind that sends the header: the user marked something and asks what it is.
+    /// The user marked something and asks what it is (the gateway sends it to the 9B).
     public static let inkDescribeTurn = "ink-describe"
+    /// The user marked something and asks more than its name (the gateway sends it to Holo35).
+    public static let inkExplainTurn = "ink-explain"
 
     /// Builds the `/api/chat` request. `turn` is sent as `X-Clicky-Turn` when
     /// non-nil; every other turn sends no such header. Pure + static so a unit
@@ -366,8 +368,8 @@ public final class OllamaClient: @unchecked Sendable {
     ///     request. A roomier, *consistent* value avoids that — and it must be the
     ///     same on every call (warm-up included), or Ollama reloads the model and
     ///     the warm-up is wasted.
-    ///   - turn: sent as the `X-Clicky-Turn` header when non-nil (only ink
-    ///     describe turns pass one); nil sends no header.
+    ///   - turn: sent as the `X-Clicky-Turn` header when non-nil (ink describe
+    ///     and ink explain turns pass one); nil sends no header.
     @discardableResult
     public func streamChat(
         model: String,

@@ -53,6 +53,18 @@ final class InkPromptTests: XCTestCase {
         XCTAssertFalse(LocalPrompts.inkDescribe.contains("\n"))
     }
 
+    // The explain prompt is not a measured request; the clicky-eval check pins the same string and sha256.
+    func testInkExplainPromptIsPinnedAndHasNoNamingOpenerAndNoDashes() {
+        let prompt = LocalPrompts.inkExplain
+        let digest = SHA256.hash(data: Data(prompt.utf8)).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(digest, "6eb44904b41051e2a028e5f7cc6af9e5e22cd1c70b8a5ff6f1ef2bc97e1ecc85")
+        XCTAssertFalse(prompt.contains("that's the"))
+        XCTAssertTrue(prompt.contains("numbers as digits"))
+        XCTAssertFalse(prompt.contains("\u{2014}"))
+        XCTAssertFalse(prompt.contains("\u{2013}"))
+        XCTAssertFalse(prompt.contains("\n"))
+    }
+
     func testMarkLinesPerKind() {
         XCTAssertEqual(LocalPrompts.inkMarkLine(kind: .circle, hasCloseUp: true), "the marked thing is inside the ring.")
         XCTAssertEqual(LocalPrompts.inkMarkLine(kind: .line, hasCloseUp: true), "the marked thing is directly above the line.")

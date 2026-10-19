@@ -160,6 +160,10 @@ public enum LocalPrompts {
     /// (PointingTarget.namesWindow). The point prompt speaks of one control; this says the target is the whole thing.
     public static let windowTargetLine = "the thing to point at is a whole window or app, not one control inside it. point at the middle of that window's title bar, or at the middle of the window when its title bar is not visible."
 
+    /// The system prompt of an ink turn whose words ask more than the name (InkTurnPolicy, kind .explain).
+    /// Not a measured request: the naming turn keeps the eval's A1FPC text byte for byte, this one answers the question.
+    public static let inkExplain = "you are localclicky. the user marked an area on their screen and asked a question about it. answer that question from what is inside the marked area. read the exact words, names, numbers and values written there and say them as they appear, numbers as digits. do not describe the app, the window or anything outside the marked area unless the question needs it. if the marked area does not hold the answer, say what it does show instead of guessing. your reply is read aloud: two to four short sentences, all lowercase, no emojis, no markdown, no lists, no coordinates and no bracketed tags."
+
     /// One line about where the marked thing is, by the kind of the mark, last
     /// in the addendum (ce_ink.MARK_LINES and mark_line). The scribble line
     /// points at the clean close-up only when one is sent.
