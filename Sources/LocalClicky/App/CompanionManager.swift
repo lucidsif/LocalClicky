@@ -1374,13 +1374,22 @@ final class CompanionManager: ObservableObject {
                     : systemPrompt + "\n\n" + Self.currentEnvironmentContext()
 
                 var messages: [OllamaChatMessage] = [.system(systemWithContext)]
-                for exchange in conversationHistory {
-                    messages.append(.user(exchange.userTranscript))
-                    messages.append(.assistant(exchange.assistantResponse))
+                // A grounding turn sends no history: the measured pointing request
+                // has none, and after one "i don't see it" every retry was primed
+                // to say it again.
+                if !wantsGrounding {
+                    for exchange in conversationHistory {
+                        messages.append(.user(exchange.userTranscript))
+                        messages.append(.assistant(exchange.assistantResponse))
+                    }
                 }
                 // The ink text rides after the user's words, so every system
                 // prompt but the ink describe turn's stays as it is with no ink.
                 var userText = transcript
+                // A window or app is not the control the point prompt talks about.
+                if wantsPointing, PointingTarget.namesWindow(transcript) {
+                    userText += "\n\n" + LocalPrompts.windowTargetLine
+                }
                 if let usableInk {
                     userText += "\n\n" + LocalPrompts.inkAddendum(
                         gestureSummary: usableInk.gestureSummary,

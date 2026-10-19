@@ -156,6 +156,10 @@ public enum LocalPrompts {
     /// ink prompt (clicky-eval ce_ink.INK_SYSTEM, arm A1FPC).
     public static let inkDescribe = "you are localclicky. the user marked one thing on their screen. say what that one thing is. begin with \"that's the <name>\". name the exact control, icon, row or word that is marked; use its label if it has one. do not describe the app, the window or anything else on screen. your reply is read aloud: one or two short sentences, all lowercase, no emojis, no markdown, no lists."
 
+    /// Appended after the user's words on a pointing or click turn whose words name a window or an app
+    /// (PointingTarget.namesWindow). The point prompt speaks of one control; this says the target is the whole thing.
+    public static let windowTargetLine = "the thing to point at is a whole window or app, not one control inside it. point at the middle of that window's title bar, or at the middle of the window when its title bar is not visible."
+
     /// One line about where the marked thing is, by the kind of the mark, last
     /// in the addendum (ce_ink.MARK_LINES and mark_line). The scribble line
     /// points at the clean close-up only when one is sent.
