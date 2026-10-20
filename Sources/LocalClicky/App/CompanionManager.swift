@@ -197,8 +197,28 @@ final class CompanionManager: ObservableObject {
     /// a late early-dispatch from running after the final parse took over.
     private final class TurnPointingState {
         var earlyDispatchedImagePoint: CGPoint?
+        /// Where the early flight went (global AppKit points, after the snap): a click turn clicks there.
+        var earlyDispatchedLocation: CGPoint?
         var isFinalized = false
     }
+
+    /// What the pointing step of one turn knows besides the model's point: the words the model got, the
+    /// object put into them for a follow-up, and whether the request names a window (the snap picks the
+    /// window's title bar for one, an Accessibility element for anything else).
+    private struct PointingTurnInfo: Sendable {
+        let transcript: String
+        let substitutedObject: String?
+        let namesWindow: Bool
+    }
+
+    /// The noun phrase of the last pointing or click request ("the chat window"), for "point out to me again"
+    /// (PointingFollowUp). Replaced by the next request that has an object of its own.
+    private var lastPointingObject: String?
+    /// The previous turn pointed at or clicked something, so a bare "again" or "that one" points too.
+    private var previousTurnWasPointing = false
+    /// Marks were on screen (or waiting for their sentence) when the key was pressed. The press clears them
+    /// before the words are heard, so "clear the tic tac toe" needs this to know there was a drawing to clear.
+    private var marksShownAtPress = false
 
     /// The current drawing turn's marks waiting for their sentence to be
     /// spoken (SpeechMarkScheduler), the task that shows them when due, and the
@@ -988,6 +1008,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask = nil
             currentResponseIdentifier = nil
             speechSynthesizer.stopPlayback()
+            marksShownAtPress = assistantMarks.isShowing || markScheduler?.hasPending == true
             // The next press clears the assistant's marks at once, and drops
             // any still waiting for their sentence.
             cancelPendingMarks()
@@ -1204,11 +1225,15 @@ final class CompanionManager: ObservableObject {
                         visionModeSelected: !isTextOnlyMode,
                         screenAvailable: hasScreenRecordingPermission,
                         previousTurnUsedScreen: previousTurnUsedScreen,
-                        hasConversationHistory: !conversationHistory.isEmpty
+                        hasConversationHistory: !conversationHistory.isEmpty,
+                        previousTurnWasPointing: previousTurnWasPointing
                     ),
                     hasUsableInk: inkPackage != nil,
                     drawingEnabled: drawingEnabled
                 )
+                previousTurnWasPointing = (route == .screenPoint || route == .screenClick)
+                let drawnAtPress = marksShownAtPress
+                marksShownAtPress = false
 
                 timer?.setRoute(String(describing: route))
 
@@ -1251,7 +1276,7 @@ final class CompanionManager: ObservableObject {
                     return
                 }
                 if route == .clearMarks {
-                    await handleClearMarks()
+                    await handleClearMarks(transcript: transcript, drawnAtPress: drawnAtPress)
                     settleAfterAction()
                     return
                 }
@@ -1269,6 +1294,11 @@ final class CompanionManager: ObservableObject {
                 // coordinates are in the full image, so no close-up, a tight
                 // prompt and no clock context.
                 let wantsGrounding = wantsPointing || wantsDrawing
+                // A pointing turn with no object of its own ("point out to me again") gets the last one put into
+                // the words the model sees. History stays off for it, so a refusal is never restored.
+                let followUp = wantsPointing ? PointingFollowUp.resolve(transcript: transcript, lastObject: lastPointingObject) : nil
+                if let followUp { lastPointingObject = followUp.object }
+                let groundingTranscript = followUp?.transcript ?? transcript
                 // A circle or arrow request is drawn from a point: the grounding
                 // model gets the pointing prompt and the app builds the mark
                 // (PointThenDraw). Other marks, and the flag off, keep the shape tags.
@@ -1306,7 +1336,7 @@ final class CompanionManager: ObservableObject {
                     cursorScreenCapture = capture
                     // A figure with a template is drawn and spoken by the app, with no model call.
                     if wantsSketch, let plan = sketchPlan(for: transcript, in: capture) {
-                        await showSketch(plan, transcript: transcript, in: capture, timer: timer)
+                        await showSketch(plan, transcript: transcript, route: route, in: capture, timer: timer)
                         settleAfterAction()
                         return
                     }
@@ -1413,13 +1443,16 @@ final class CompanionManager: ObservableObject {
                 }
                 // The ink text rides after the user's words, so every system
                 // prompt but the ink describe turn's stays as it is with no ink.
-                var userText = transcript
+                var userText = groundingTranscript
                 // A window or app is not the control the point prompt talks about. A
                 // point-then-draw turn sends the point prompt too, so it gets the line.
-                if PointingTarget.wantsWindowLine(transcript: transcript, wantsPointing: wantsPointing,
-                                                  pointDrawKind: pointThenDrawKind) {
+                let windowLine = PointingTarget.wantsWindowLine(transcript: groundingTranscript, wantsPointing: wantsPointing,
+                                                                pointDrawKind: pointThenDrawKind)
+                if windowLine {
                     userText += "\n\n" + LocalPrompts.windowTargetLine
                 }
+                let pointingInfo = PointingTurnInfo(transcript: transcript, substitutedObject: followUp?.substitutedObject,
+                                                    namesWindow: wantsPointing && windowLine)
                 if let usableInk {
                     userText += "\n\n" + LocalPrompts.inkAddendum(
                         gestureSummary: usableInk.gestureSummary,
@@ -1525,10 +1558,15 @@ final class CompanionManager: ObservableObject {
                                 guard let self,
                                       !pointingState.isFinalized,
                                       self.currentResponseIdentifier == responseIdentifier else { return }
+                                // Snapped to the window or control the model named (at most about 150 ms). The
+                                // reconcile below compares the model's own points, so it gets `center`.
+                                let target = await self.snappedImagePoint(center, label: tag.label, info: pointingInfo, in: capture)
+                                guard !pointingState.isFinalized,
+                                      self.currentResponseIdentifier == responseIdentifier else { return }
                                 pointingState.earlyDispatchedImagePoint = center
                                 timer?.mark(.tagParsed)
                                 timer?.setPointParsed(true)
-                                self.dispatchPointerFlight(toImagePoint: center, label: tag.label, in: capture)
+                                pointingState.earlyDispatchedLocation = self.dispatchPointerFlight(toImagePoint: target, label: tag.label, in: capture)
                             }
                         }
                     }
@@ -1605,11 +1643,15 @@ final class CompanionManager: ObservableObject {
                     case .nothing:
                         break
                     case .keepEarly:
-                        if let center = pointing.centerInImagePixels {
+                        // The early flight went to the snapped point; a click goes there too.
+                        if let early = pointingState.earlyDispatchedLocation {
+                            clickLocation = early
+                        } else if let center = pointing.centerInImagePixels {
                             clickLocation = globalScreenLocation(forImagePoint: center, in: capture)
                         }
                     case .dispatchFinal(let center):
-                        clickLocation = dispatchPointerFlight(toImagePoint: center, label: pointing.label, in: capture)
+                        let target = await snappedImagePoint(center, label: pointing.label, info: pointingInfo, in: capture)
+                        clickLocation = dispatchPointerFlight(toImagePoint: target, label: pointing.label, in: capture)
                     case .earlyWithdrawn:
                         print("⚠️ The final parse has no point but the cursor already left early; not clicking.")
                     }
@@ -1621,7 +1663,13 @@ final class CompanionManager: ObservableObject {
                     }
                 }
 
-                conversationHistory.append((userTranscript: transcript, assistantResponse: spokenText))
+                // A sketch records a neutral note, not its sentence, so a later chat turn has nothing to recite
+                // for a drawing that is gone (or never was). lastSpokenAnswer below keeps the real sentence.
+                let historyText = wantsSketch
+                    ? SketchHistory.note(for: SketchIntent.figure(transcript) ?? .freeform("something"),
+                                         drew: (scheduler?.closedCount ?? 0) > 0)
+                    : spokenText
+                conversationHistory.append((userTranscript: transcript, assistantResponse: historyText))
                 if conversationHistory.count > 10 {
                     conversationHistory.removeFirst(conversationHistory.count - 10)
                 }
@@ -1699,10 +1747,12 @@ final class CompanionManager: ObservableObject {
     /// What the app draws for a sketch turn, or nil when the grounding model should draw it
     /// (a figure with no template, with SketchLimits.freeformEnabled on and a grounding model
     /// available). With that path off the plan is the spoken list of what the app can draw.
+    /// A template is placed where the words said and sized as they said (SketchRequest).
     private func sketchPlan(for transcript: String, in capture: CompanionScreenCapture) -> SketchPlan? {
-        let figure = SketchIntent.figure(transcript)
-        if let figure, let plan = SketchTemplate.plan(figure, imageWidth: capture.screenshotWidthInPixels,
-                                                      imageHeight: capture.screenshotHeightInPixels) {
+        let request = SketchIntent.parse(transcript)
+        if let request, let plan = SketchTemplate.plan(request.figure, imageWidth: capture.screenshotWidthInPixels,
+                                                       imageHeight: capture.screenshotHeightInPixels,
+                                                       anchor: request.anchor, size: request.size, board: request.board) {
             return plan
         }
         if SketchLimits.freeformEnabled, LocalModels.isLikelyGroundingCapable(resolvedGroundingModelName()) { return nil }
@@ -1712,7 +1762,8 @@ final class CompanionManager: ObservableObject {
     /// Draws a template sketch and speaks its one sentence. Every mark closes before the
     /// sentence is queued, so all of them show when that clip starts (SpeechMarkScheduler);
     /// the figure then holds SketchTiming.holdSeconds after the speech.
-    private func showSketch(_ plan: SketchPlan, transcript: String, in capture: CompanionScreenCapture, timer: TurnTimer?) async {
+    private func showSketch(_ plan: SketchPlan, transcript: String, route: ConversationRoute,
+                            in capture: CompanionScreenCapture, timer: TurnTimer?) async {
         let scheduler = SpeechMarkSchedulerBox<InkDrawing>(firstClipID: nextClipIDBase)
         nextClipIDBase += 100_000
         startMarkDriver(scheduler, in: capture, timer: timer)
@@ -1722,26 +1773,43 @@ final class CompanionManager: ObservableObject {
         scheduler.finishInput()
         timer?.setMarks(scheduler.closedCount)
 
-        conversationHistory.append((userTranscript: transcript, assistantResponse: plan.spokenSentence))
+        // The history holds a neutral note, not the sentence: a later chat turn recites a sentence it finds there
+        // for a drawing that is gone. lastSpokenAnswer keeps the real sentence for "copy your answer".
+        let request = SketchIntent.parse(transcript)
+        let note = plan.drawings.isEmpty ? "(could not draw that)" : SketchHistory.note(for: request?.figure ?? .freeform("something"))
+        conversationHistory.append((userTranscript: transcript, assistantResponse: note))
         if conversationHistory.count > 10 {
             conversationHistory.removeFirst(conversationHistory.count - 10)
         }
         lastSpokenAnswer = plan.spokenSentence
         previousTurnUsedScreen = true
 
+        // TEMP debug logger (remove at project end)
+        TempAppDebugLog.append("sketch", ["transcript": transcript, "route": String(describing: route),
+                                          "figure": request.map { String(describing: $0.figure) } ?? "none",
+                                          "anchor": request?.anchor.name ?? "none",
+                                          "size": request.map { String(describing: $0.size) } ?? "none",
+                                          "board": request?.board ?? "", "spoken": plan.spokenSentence])
+
         voiceState = .responding
         do { try await speechSynthesizer.speakText(plan.spokenSentence, clipID: clipID) }
         catch { print("⚠️ TTS error during sketch: \(error)") }
     }
 
-    /// "clear that": takes down what the assistant drew and says so. A key press
-    /// already clears the marks, so this is the spoken confirmation of that.
-    private func handleClearMarks() async {
+    /// "clear that": takes down what the assistant drew and says so. A key press already
+    /// clears the marks, so this is the spoken confirmation of that. `drawnAtPress` says
+    /// there were marks when the key went down. With nothing drawn (the sketch's 10 s hold
+    /// already ended) it says so, and the turn does not fall through to chat.
+    private func handleClearMarks(transcript: String, drawnAtPress: Bool) async {
+        let cleared = drawnAtPress || assistantMarks.isShowing || markScheduler?.hasPending == true
         marksClearTask?.cancel()
         marksClearTask = nil
+        cancelPendingMarks()
         assistantMarks.clearNow()
+        // TEMP debug logger (remove at project end)
+        TempAppDebugLog.append("clear", ["transcript": transcript, "cleared": cleared])
         voiceState = .responding
-        do { try await speechSynthesizer.speakText("cleared.") }
+        do { try await speechSynthesizer.speakText(cleared ? "cleared." : "nothing is drawn right now.") }
         catch { print("⚠️ TTS error during clear: \(error)") }
     }
 
@@ -2165,6 +2233,26 @@ final class CompanionManager: ObservableObject {
             self.marksHoldSeconds = nil
             self.assistantMarks.scheduleClear(hold: hold, fade: fade.fade)
         }
+    }
+
+    /// The model's point moved onto the window (a window request) or the control (anything else) it named, in
+    /// screenshot pixels; the model's own point when nothing matches (PointSnap, PointSnapper). Waits at most
+    /// about PointSnap.budgetSeconds.
+    private func snappedImagePoint(_ point: CGPoint, label: String?, info: PointingTurnInfo,
+                                   in capture: CompanionScreenCapture) async -> CGPoint {
+        let outcome = await PointSnapper.snap(imagePoint: point, label: label, namesWindow: info.namesWindow,
+                                              mapping: screenMapping(for: capture))
+        print("📍 Snap: \(outcome.result.kind.rawValue) (\(Int(point.x)), \(Int(point.y))) px → (\(Int(outcome.imagePoint.x)), \(Int(outcome.imagePoint.y))) px")
+        // TEMP debug logger (remove at project end)
+        TempAppDebugLog.append("point", ["transcript": info.transcript,
+                                         "substitutedObject": info.substitutedObject ?? NSNull(),
+                                         "windowLine": info.namesWindow,
+                                         "modelPointPx": TempAppDebugLog.point(point),
+                                         "label": label ?? NSNull(),
+                                         "snap": outcome.result.kind.rawValue,
+                                         "snappedScreenPoint": outcome.snappedScreenPoint.map { TempAppDebugLog.point($0) } ?? NSNull(),
+                                         "matchedLabel": outcome.result.matchedLabel ?? NSNull()])
+        return outcome.imagePoint
     }
 
     /// Sends the blue cursor to a point in the screenshot's pixel space and

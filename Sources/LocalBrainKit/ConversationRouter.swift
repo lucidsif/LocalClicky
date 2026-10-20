@@ -85,15 +85,21 @@ public enum ConversationRouter {
         public let previousTurnUsedScreen: Bool
         /// There's at least one prior exchange this session.
         public let hasConversationHistory: Bool
+        /// The immediately-preceding turn pointed at or clicked something. Lets a bare
+        /// follow-up ("again", "that one", "show me again") be a pointing turn
+        /// (PointingFollowUp); without it those words are not about the screen.
+        public let previousTurnWasPointing: Bool
 
         public init(visionModeSelected: Bool,
                     screenAvailable: Bool,
                     previousTurnUsedScreen: Bool,
-                    hasConversationHistory: Bool) {
+                    hasConversationHistory: Bool,
+                    previousTurnWasPointing: Bool = false) {
             self.visionModeSelected = visionModeSelected
             self.screenAvailable = screenAvailable
             self.previousTurnUsedScreen = previousTurnUsedScreen
             self.hasConversationHistory = hasConversationHistory
+            self.previousTurnWasPointing = previousTurnWasPointing
         }
     }
 
@@ -108,6 +114,7 @@ public enum ConversationRouter {
         // browser tab).
         let isClickCommand = wantsClick(text)
         let isPointingQuestion = isClickCommand || wantsPointing(text)
+            || (context.previousTurnWasPointing && PointingFollowUp.isBareFollowUp(text))
 
         // 1) Deterministic action requests win over questions, in order of how
         //    unambiguous they are — but never over a pointing/click request.
@@ -207,7 +214,22 @@ public enum ConversationRouter {
                        " dropdown", " text box", " text field", " slider", " tab", " link", " option"]
         let locateCue = text.contains("find ") || text.contains("locate ") || text.contains("where")
         if locateCue && uiNouns.contains(where: text.contains) { return true }
-        return false
+        return wantsWhereObjectIs(text)
+    }
+
+    /// "where the chat window is", "find out where the send button is", "tell me where my files are": the
+    /// object sits between "where" and "is/are", so the "where is the" phrases miss it. The "find out / find /
+    /// tell me / show where the" forms need an article after "where"; the bare form needs the question to end
+    /// on "is/are". Questions about a place in the world ("where the nearest coffee shop is") and live-data questions are left alone.
+    /// A hit still skips the web, timer, app and browser routes, as every pointing question does; route()
+    /// only acts on it with vision mode on and the screen available.
+    static func wantsWhereObjectIs(_ text: String) -> Bool {
+        let outsideWorld = ["nearest", "closest", "nearby", "near me", "in the world", "in town", "in the city", "open now"]
+        guard !outsideWorld.contains(where: text.contains), !wantsWebReach(text) else { return false }
+        if text.range(of: #"\b(?:find out|find|tell me|show) where\s+(?:the|my|that|this|those|these|it|they)\b"#,
+                      options: .regularExpression) != nil { return true }
+        return text.range(of: #"\bwhere\s+(?:the|my|that|this)\s+[a-z' -]{1,40}?\s+(?:is|are)(?:\s+(?:located|right now|now|here|on (?:my|the) screen))?[\s.?!]*$"#,
+                          options: .regularExpression) != nil
     }
 
     /// True when the user is actually referring to what's on their screen — so we

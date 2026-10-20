@@ -9,8 +9,9 @@ final class SketchTemplateTests: XCTestCase {
         return tag
     }
 
-    private func ticTacToe(_ board: String = SketchTemplate.defaultBoard, width: Int = 1152, height: Int = 720) -> SketchPlan {
-        SketchTemplate.plan(.ticTacToe, imageWidth: width, imageHeight: height, board: board)!
+    private func ticTacToe(_ board: String = SketchTemplate.demoBoard, width: Int = 1152, height: Int = 720,
+                           anchor: SketchAnchor = .centre, size: SketchSize = .normal) -> SketchPlan {
+        SketchTemplate.plan(.ticTacToe, imageWidth: width, imageHeight: height, anchor: anchor, size: size, board: board)!
     }
 
     func testTicTacToeIsAGridThenTheMovesInPlayOrder() {
@@ -76,7 +77,7 @@ final class SketchTemplateTests: XCTestCase {
     func testAnEmptyBoardIsJustTheGrid() {
         XCTAssertEqual(ticTacToe("....").drawings.count, 4)
         XCTAssertEqual(ticTacToe(".........").drawings.count, 4)
-        XCTAssertEqual(ticTacToe("....").spokenSentence, "here is a tic tac toe board in the middle of your screen, with no moves yet.")
+        XCTAssertEqual(ticTacToe("....").spokenSentence, "here is an empty tic tac toe board in the middle of your screen.")
     }
 
     func testTheSentenceNamesEveryMoveByItsCell() {
@@ -160,5 +161,112 @@ final class SketchTemplateTests: XCTestCase {
     func testTheArrowPointsUp() {
         let points = shape(SketchTemplate.plan(.arrow, imageWidth: 1152, imageHeight: 720)!.drawings[0]).points
         XCTAssertLessThan(points[1].y, points[0].y)
+    }
+
+    // MARK: placement
+
+    private let allFigures: [SketchFigure] = [.ticTacToe, .box, .line, .arrow, .circle, .triangle, .star, .smiley, .cross, .check]
+
+    private func bounds(_ plan: SketchPlan) -> CGRect {
+        // A circle's second point is on the ring, so the ring's extent is the point's distance from its centre.
+        var rect = CGRect.null
+        for drawing in plan.drawings {
+            let tag = shape(drawing)
+            if tag.kind == .circle {
+                let r = abs(tag.points[1].x - tag.points[0].x)
+                rect = rect.union(CGRect(x: tag.points[0].x - r, y: tag.points[0].y - r, width: 2 * r, height: 2 * r))
+            } else {
+                for point in tag.points { rect = rect.union(CGRect(origin: point, size: .zero)) }
+            }
+        }
+        return rect
+    }
+
+    func testEveryFigureStaysFullyOnTheScreenInEveryRegionAtEverySize() {
+        for (width, height) in sizes {
+            let frame = CGRect(x: 0, y: 0, width: width, height: height)
+            for anchor in SketchAnchor.allCases {
+                for size in [SketchSize.small, .normal, .large] {
+                    for figure in allFigures {
+                        let plan = SketchTemplate.plan(figure, imageWidth: width, imageHeight: height, anchor: anchor, size: size,
+                                                       board: "XOXOXOXOX")!
+                        let box = bounds(plan)
+                        XCTAssertTrue(frame.contains(box), "\(figure) \(anchor) \(size) \(width)x\(height) \(box)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testEachFigureIsCentredInItsThirdOfTheScreen() {
+        for (width, height) in sizes {
+            for anchor in SketchAnchor.allCases {
+                for figure in allFigures {
+                    let box = bounds(SketchTemplate.plan(figure, imageWidth: width, imageHeight: height, anchor: anchor)!)
+                    let thirdWidth = Double(width) / 3, thirdHeight = Double(height) / 3
+                    let third = CGRect(x: Double(anchor.column) * thirdWidth, y: Double(anchor.row) * thirdHeight,
+                                       width: thirdWidth, height: thirdHeight)
+                    XCTAssertTrue(third.contains(CGPoint(x: box.midX, y: box.midY)), "\(figure) \(anchor) \(width)x\(height)")
+                }
+            }
+        }
+    }
+
+    func testTheCentreRegionAndTheNormalSizeAreTheOldPlacement() {
+        let old = ticTacToe(anchor: .centre, size: .normal)
+        let lines = old.drawings.prefix(4).map { shape($0).points }
+        XCTAssertEqual(lines[0], [CGPoint(x: 516, y: 180), CGPoint(x: 516, y: 540)])
+    }
+
+    func testBiggerAndSmallerFiguresScaleAboutTheirCentre() {
+        let small = bounds(SketchTemplate.plan(.circle, imageWidth: 1152, imageHeight: 720, size: .small)!)
+        let normal = bounds(SketchTemplate.plan(.circle, imageWidth: 1152, imageHeight: 720)!)
+        let large = bounds(SketchTemplate.plan(.circle, imageWidth: 1152, imageHeight: 720, size: .large)!)
+        XCTAssertLessThan(small.width, normal.width)
+        XCTAssertGreaterThan(large.width, normal.width)
+        XCTAssertEqual(small.midX, normal.midX, accuracy: 0.5)
+        XCTAssertEqual(large.midY, normal.midY, accuracy: 0.5)
+    }
+
+    func testTheSentenceNamesTheRealPosition() {
+        func sentence(_ figure: SketchFigure, _ anchor: SketchAnchor) -> String {
+            SketchTemplate.plan(figure, imageWidth: 1152, imageHeight: 720, anchor: anchor)!.spokenSentence
+        }
+        XCTAssertEqual(sentence(.star, .centre), "here is a star in the middle of your screen.")
+        XCTAssertEqual(sentence(.star, .bottomLeft), "here is a star in the bottom left of your screen.")
+        XCTAssertEqual(sentence(.box, .topRight), "here is a square box in the top right of your screen.")
+        XCTAssertEqual(sentence(.circle, .top), "here is a circle at the top of your screen.")
+        XCTAssertEqual(sentence(.circle, .left), "here is a circle on the left of your screen.")
+        XCTAssertEqual(sentence(.arrow, .bottom), "here is an arrow at the bottom of your screen, pointing up.")
+        XCTAssertEqual(sentence(.line, .centre), "here is a straight line across the middle of your screen.")
+        XCTAssertEqual(sentence(.line, .right), "here is a straight line on the right of your screen.")
+        XCTAssertEqual(SketchTemplate.plan(.ticTacToe, imageWidth: 1152, imageHeight: 720, anchor: .bottomLeft)!.spokenSentence,
+                       "here is an empty tic tac toe board in the bottom left of your screen.")
+        XCTAssertEqual(SketchTemplate.plan(.ticTacToe, imageWidth: 1152, imageHeight: 720, anchor: .bottomLeft, board: "....X....")!.spokenSentence,
+                       "here is a tic tac toe board in the bottom left of your screen, with an x in the centre.")
+        for anchor in SketchAnchor.allCases {
+            for figure in allFigures {
+                let text = sentence(figure, anchor)
+                XCTAssertTrue(text.contains("your screen"), text)
+                XCTAssertFalse(text.contains("\u{2014}"))
+            }
+        }
+    }
+
+    func testThePlainRequestDrawsAnEmptyBoardAndTheSentenceSaysSo() {
+        let plan = SketchTemplate.plan(.ticTacToe, imageWidth: 1152, imageHeight: 720)!
+        XCTAssertEqual(plan.drawings.count, 4)
+        XCTAssertEqual(plan.spokenSentence, "here is an empty tic tac toe board in the middle of your screen.")
+        XCTAssertEqual(SketchTemplate.emptyBoard.count, 9)
+        XCTAssertEqual(SketchTemplate.demoBoard, "O...X...X")
+    }
+
+    func testTheSentenceDescribesExactlyTheMovesDrawn() {
+        // x centre, o top left, x top right: 3 moves, x first, 2 + 1 + 2 strokes after the grid.
+        let board = "O.X.X...."
+        let plan = ticTacToe(board)
+        XCTAssertEqual(plan.drawings.count, 4 + 2 + 1 + 2)
+        XCTAssertEqual(plan.spokenSentence,
+                       "here is a tic tac toe board in the middle of your screen, with an x in the top right, an o in the top left and an x in the centre.")
     }
 }

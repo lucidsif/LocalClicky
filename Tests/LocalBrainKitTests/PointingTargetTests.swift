@@ -16,6 +16,23 @@ final class PointingTargetTests: XCTestCase {
         }
     }
 
+    func testTheArticleIsOptional() {
+        for words in ["point out chat window", "point out claude window", "Point out where claude window is", "show me chat app",
+                      "find out where the chat window is here", "point to terminal window"] {
+            XCTAssertTrue(PointingTarget.namesWindow(words), words)
+        }
+    }
+
+    // "the chat window bar" is the bar, a control, and not the window.
+    func testBarBoxInputComposerAndSidebarAreControls() {
+        for words in ["point out chat window bar to me", "Point out the chat window bar to me", "point at the message box in the chat window",
+                      "where is the input in the chat window", "point to the composer in the claude app", "where is the sidebar of the notes app",
+                      "point to the search bar in this app", "where is the text field in this window", "point out the chat window bars",
+                      "point at the title bar of the chat window", "point at the menu bar of the notes app"] {
+            XCTAssertFalse(PointingTarget.namesWindow(words), words)
+        }
+    }
+
     func testControlRequestsDoNotNameAWindow() {
         for words in ["where is the save button in this app", "where is the settings button", "point at the search bar",
                       "click the app store icon", "where do i click to save", "which tab is the chat window in",

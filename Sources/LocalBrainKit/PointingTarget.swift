@@ -27,6 +27,10 @@ public enum PointingTarget {
         (wantsPointing || pointDrawKind != nil) && namesWindow(transcript)
     }
 
-    private static let windowObject = #"\b(?:the|that|this|my|a|an|which)\s+(?:[a-z'-]+\s+){0,3}(?:window|app|application)s?\b"#
-    private static let controlNoun = #"\b(?:button|menu|icon|toolbar|field|checkbox|dropdown|slider|tab|link|option|text box|dock)s?\b"#
+    /// The article is optional ("point out chat window", "point out claude window"): the word itself is the cue.
+    private static let windowObject = #"\b(?:window|app|application)s?\b"#
+    /// "the chat window bar" is a control request: bar, box, input, composer, text field, search bar and sidebar
+    /// count as controls. "title bar" and "menu bar" therefore do too, on purpose: asking for the bar is asking
+    /// for a control, and the point prompt handles one control well.
+    private static let controlNoun = #"\b(?:button|menu|icon|toolbar|field|checkbox|dropdown|slider|tab|link|option|text box|dock|bar|box|input|composer|text field|search bar|sidebar)s?\b"#
 }

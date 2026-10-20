@@ -122,6 +122,13 @@ public struct ScreenMapping: Equatable, Sendable {
         displayLocalPoint(forGlobalPoint: CGPoint(x: point.x, y: primaryScreenHeight - point.y))
     }
 
+    /// Core Graphics global point to screenshot pixel: the inverse of the model-point-to-screen chain
+    /// (`displayLocalPoint(forImagePoint:)` then `cgGlobalPoint`). Not clamped. PointSnap works in Core
+    /// Graphics points and hands its result back through this.
+    public func imagePoint(forCGGlobalPoint point: CGPoint, primaryScreenHeight: CGFloat) -> CGPoint {
+        imagePoint(forOverlayPoint: displayLocalPoint(forCGGlobalPoint: point, primaryScreenHeight: primaryScreenHeight))
+    }
+
     /// A Core Graphics global rectangle (an Accessibility frame) as a display-local
     /// rectangle, top-left origin.
     public func displayLocalRect(forCGGlobalRect rect: CGRect, primaryScreenHeight: CGFloat) -> CGRect {
