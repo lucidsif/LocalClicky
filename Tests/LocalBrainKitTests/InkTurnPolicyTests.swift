@@ -12,7 +12,8 @@ final class InkTurnPolicyTests: XCTestCase {
         for words in ["what is this?", "what's this right here?", "can you tell me what this is?", "What's that?",
                       "what is it", "hey clicky what's this", "what is this called", "what's this thing",
                       "what am i looking at", "name this", "which button is this", "tell me what this is",
-                      "this?", "what is this one", "whats this", "What\u{2019}s this?", "okay so what is this please"] {
+                      "this?", "what is this one", "whats this", "What\u{2019}s this?", "okay so what is this please",
+                      "what's this button", "what is this icon", "what's this thing here", "what is this option?"] {
             XCTAssertEqual(InkQuestion.kind(words), .naming, words)
         }
     }
@@ -32,6 +33,7 @@ final class InkTurnPolicyTests: XCTestCase {
 
     func testEverythingElseExplains() {
         for words in ["go into detail", "go into detail about this", "what does this mean", "what is this error",
+                      "what's this button for", "what is this icon doing",
                       "what's this error about", "explain this", "read this to me", "what does this say",
                       "how many lines changed here", "summarize this", "what is this doing", "what is this for",
                       "why is this red", "tell me about this", "what changed in this commit", "what is this number",
@@ -57,24 +59,16 @@ final class InkTurnPolicyTests: XCTestCase {
         let naming = try XCTUnwrap(plan("what is this?"))
         XCTAssertEqual(naming.kind, .naming)
         XCTAssertEqual(naming.turnHeader, "ink-describe")
-        XCTAssertTrue(naming.sendsCloseUp)
         XCTAssertFalse(naming.sendsAccessibilityBlock)
-        XCTAssertTrue(naming.sendsMarkLine)
-        XCTAssertFalse(naming.sendsEnvironmentLine)
         XCTAssertFalse(naming.sendsHistory)
-        XCTAssertEqual(naming.answerMaxTokens, 320)
     }
 
     func testExplainPlanAnswersTheQuestion() throws {
         let explain = try XCTUnwrap(plan("go into detail"))
         XCTAssertEqual(explain.kind, .explain)
         XCTAssertEqual(explain.turnHeader, "ink-explain")
-        XCTAssertTrue(explain.sendsCloseUp)
         XCTAssertTrue(explain.sendsAccessibilityBlock)
-        XCTAssertTrue(explain.sendsMarkLine)
-        XCTAssertFalse(explain.sendsEnvironmentLine)
         XCTAssertTrue(explain.sendsHistory)
-        XCTAssertEqual(explain.answerMaxTokens, 320)
     }
 
     // MARK: - the branching CompanionManager reads
@@ -96,9 +90,9 @@ final class InkTurnPolicyTests: XCTestCase {
             let plan = try XCTUnwrap(plan(words))
             return words + "\n\n" + LocalPrompts.inkAddendum(
                 gestureSummary: "The user drew 1 mark while speaking: circled an area in the top left.",
-                markerColourName: "yellow", hasCloseUp: plan.sendsCloseUp,
+                markerColourName: "yellow", hasCloseUp: true,
                 accessibilityBlock: plan.sendsAccessibilityBlock ? block : "",
-                markKind: plan.sendsMarkLine ? .circle : nil)
+                markKind: .circle)
         }
         let explain = try userTurn("go into detail")
         XCTAssertTrue(explain.contains("+2,014 -4,120"))

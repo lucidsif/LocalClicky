@@ -108,6 +108,39 @@ final class SketchTemplateTests: XCTestCase {
         XCTAssertNil(SketchTemplate.plan(.freeform("house"), imageWidth: 1152, imageHeight: 720))
     }
 
+    // showMarks skips a drawing whose geometry is empty without a word, so pin that no template is one.
+    func testEveryTemplateDrawingBuildsNonEmptyGeometry() {
+        let figures: [SketchFigure] = [.ticTacToe, .box, .line, .arrow, .circle, .triangle, .star, .smiley, .cross, .check]
+        for (width, height) in sizes {
+            let mapping = ScreenMapping(displayFrame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                                        displayWidthInPoints: 1440, displayHeightInPoints: 900,
+                                        screenshotWidthInPixels: width, screenshotHeightInPixels: height)
+            for figure in figures {
+                let plan = SketchTemplate.plan(figure, imageWidth: width, imageHeight: height, board: "XOXOXOXOX")!
+                for drawing in plan.drawings {
+                    let geometry = MarkGeometryBuilder.geometry(for: MarkGeometryBuilder.overlayDrawing(from: drawing, mapping: mapping))
+                    XCTAssertTrue(geometry.passes.contains { pass in pass.contains { !$0.points.isEmpty } },
+                                  "\(figure) \(width)x\(height)")
+                }
+            }
+        }
+    }
+
+    func testFreeformSpeechIsTheModelsWordsOrAnHonestFallback() {
+        let tag = "[SHAPE:line:200,200;800,200]"
+        // Words after the tags are spoken, tags removed.
+        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + "\n" + tag + "\nhere is a line.", closedTags: 2), "here is a line.")
+        // Tags but no sentence: a sentence is still spoken.
+        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + "\n" + tag, closedTags: 2), SketchLimits.drawnSentence)
+        // A tag cut off by the token cap is dropped, not read out.
+        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + "\n[SHAPE:line:200,300;8", closedTags: 1), SketchLimits.drawnSentence)
+        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + " here is a line.\n[SHAPE:line:200,300;8", closedTags: 1), "here is a line.")
+        // No valid tag: the failure sentence, whatever the model said.
+        XCTAssertEqual(SketchLimits.spokenSentence(in: "i cannot do that", closedTags: 0), SketchLimits.failureSentence)
+        XCTAssertEqual(SketchLimits.drawnSentence, SketchLimits.drawnSentence.lowercased())
+        XCTAssertFalse(SketchLimits.drawnSentence.contains("\u{2014}"))
+    }
+
     func testAFreeformSketchAdmitsShapesUpToTheCapAndNoHighlights() {
         let shapeTag = ShapeTag(kind: .line, points: [CGPoint(x: 1, y: 1), CGPoint(x: 2, y: 2)], label: nil, screenNumber: nil)
         let highlight = HighlightTag(rect: CGRect(x: 1, y: 1, width: 5, height: 5), label: nil, screenNumber: nil)

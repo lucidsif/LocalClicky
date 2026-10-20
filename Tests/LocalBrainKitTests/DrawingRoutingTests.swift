@@ -101,6 +101,13 @@ final class DrawingRoutingTests: XCTestCase {
         XCTAssertEqual(route("draw a big arrow"), .screenSketch)
     }
 
+    func testSketchWordsWithInkAreStillASketch() {
+        XCTAssertEqual(route("draw tic tac toe on the screen", ink: true), .screenSketch)
+        XCTAssertEqual(route("draw a smiley face", ink: true), .screenSketch)
+        XCTAssertEqual(route("draw a box around the error", ink: true), .screenDraw)
+        XCTAssertEqual(route("what is this", ink: true), .screen)
+    }
+
     func testWordsThatDrawAtSomethingStayMarks() {
         XCTAssertEqual(route("draw a box around the error"), .screenDraw)
         XCTAssertEqual(route("circle the save button"), .screenDraw)
@@ -112,6 +119,10 @@ final class DrawingRoutingTests: XCTestCase {
         XCTAssertEqual(route("clear that drawing"), .clearMarks)
         XCTAssertEqual(route("clear that"), .clearMarks)
         XCTAssertEqual(route("clear my inbox"), InkRouting.route(transcript: "clear my inbox", context: context(), hasUsableInk: false))
+        for words in ["undo that", "remove that", "get rid of that"] {
+            XCTAssertEqual(route(words), InkRouting.route(transcript: words, context: context(), hasUsableInk: false), words)
+            XCTAssertNotEqual(route(words), .clearMarks, words)
+        }
     }
 
     func testClickStillWinsOverASketch() {

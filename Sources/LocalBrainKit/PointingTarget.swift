@@ -21,6 +21,12 @@ public enum PointingTarget {
         return text.range(of: controlNoun, options: .regularExpression) == nil
     }
 
+    /// Whether the user turn carries `LocalPrompts.windowTargetLine`: a pointing or click turn, or a draw turn
+    /// that is drawn from a point (it sends the point prompt too), whose words name a window or app.
+    public static func wantsWindowLine(transcript: String, wantsPointing: Bool, pointDrawKind: PointDrawKind?) -> Bool {
+        (wantsPointing || pointDrawKind != nil) && namesWindow(transcript)
+    }
+
     private static let windowObject = #"\b(?:the|that|this|my|a|an|which)\s+(?:[a-z'-]+\s+){0,3}(?:window|app|application)s?\b"#
-    private static let controlNoun = #"\b(?:button|menu|icon|toolbar|field|checkbox|dropdown|slider|tab|link|option|text box)s?\b"#
+    private static let controlNoun = #"\b(?:button|menu|icon|toolbar|field|checkbox|dropdown|slider|tab|link|option|text box|dock)s?\b"#
 }

@@ -167,6 +167,8 @@ public enum LocalPrompts {
     /// The system prompt of a freeform sketch turn (route `.screenSketch`, a figure the app has no template for).
     /// The frame is 0 to 1000 on both axes: the gateway rescales it to the screenshot, and the app reads the tags as
     /// pixels. The screenshot rides along only so the gateway knows the image size. Pinned by sha256 like the eval's check.
+    /// Assumes the grounding model is `studio:clicky` behind clicky-gateway (norm1000 plus its rescaler): any other
+    /// grounding-capable model reads these tags as pixels and the figure lands as a thumbnail in the top left corner.
     public static let screenSketchResponse = """
         you are localclicky. the user asked you to draw a simple figure on their screen. this is a drawing, not a mark: do not describe, mark or point at anything in the screenshot. it is attached only so you know what the screen looks like.
 

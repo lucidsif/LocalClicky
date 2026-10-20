@@ -19,9 +19,28 @@ final class PointingTargetTests: XCTestCase {
     func testControlRequestsDoNotNameAWindow() {
         for words in ["where is the save button in this app", "where is the settings button", "point at the search bar",
                       "click the app store icon", "where do i click to save", "which tab is the chat window in",
-                      "where is the menu in the notes app"] {
+                      "where is the menu in the notes app", "click the music app in the dock"] {
             XCTAssertFalse(PointingTarget.namesWindow(words), words)
         }
+    }
+
+    func testTheLineRidesOnPointingClickAndPointThenDrawTurnsOnly() {
+        let words = "show me where the chat window is"
+        XCTAssertTrue(PointingTarget.wantsWindowLine(transcript: words, wantsPointing: true, pointDrawKind: nil))
+        XCTAssertTrue(PointingTarget.wantsWindowLine(transcript: words, wantsPointing: false, pointDrawKind: .circle))
+        XCTAssertFalse(PointingTarget.wantsWindowLine(transcript: words, wantsPointing: false, pointDrawKind: nil))
+        XCTAssertFalse(PointingTarget.wantsWindowLine(transcript: "where is the save button", wantsPointing: true, pointDrawKind: nil))
+    }
+
+    // With drawing on, "show me where" is a draw turn drawn from a point, so it sends the point prompt
+    // and has to carry the window line too.
+    func testShowMeWhereTheChatWindowIsWithDrawingOnIsAPointThenDrawTurnThatGetsTheLine() {
+        let words = "show me where the chat window is"
+        XCTAssertEqual(DrawingRouting.route(transcript: words, context: context(), hasUsableInk: false, drawingEnabled: true),
+                       .screenDraw)
+        let kind = DrawingIntent.pointThenDrawKind(words, pointThenDrawEnabled: true)
+        XCTAssertEqual(kind, .circle)
+        XCTAssertTrue(PointingTarget.wantsWindowLine(transcript: words, wantsPointing: false, pointDrawKind: kind))
     }
 
     func testWordsWithoutAWindowOrAppAreNotAWindow() {

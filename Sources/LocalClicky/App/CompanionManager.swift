@@ -1414,8 +1414,10 @@ final class CompanionManager: ObservableObject {
                 // The ink text rides after the user's words, so every system
                 // prompt but the ink describe turn's stays as it is with no ink.
                 var userText = transcript
-                // A window or app is not the control the point prompt talks about.
-                if wantsPointing, PointingTarget.namesWindow(transcript) {
+                // A window or app is not the control the point prompt talks about. A
+                // point-then-draw turn sends the point prompt too, so it gets the line.
+                if PointingTarget.wantsWindowLine(transcript: transcript, wantsPointing: wantsPointing,
+                                                  pointDrawKind: pointThenDrawKind) {
                     userText += "\n\n" + LocalPrompts.windowTargetLine
                 }
                 if let usableInk {
@@ -1561,8 +1563,11 @@ final class CompanionManager: ObservableObject {
                     }
                     scheduler.finishInput()
                     timer?.setMarks(scheduler.closedCount)
-                    // A sketch with no valid tag says so instead of reading out the model's words.
-                    if wantsSketch, scheduler.closedCount == 0 { drawnFromPointSentence = SketchLimits.failureSentence }
+                    // A sketch speaks its own words once, or says it drew nothing or has no sentence
+                    // (SketchLimits.spokenSentence); it is spoken as one sentence at the end.
+                    if wantsSketch {
+                        drawnFromPointSentence = SketchLimits.spokenSentence(in: result.text, closedTags: scheduler.closedCount)
+                    }
                 }
 
                 guard !Task.isCancelled else {
@@ -1572,7 +1577,9 @@ final class CompanionManager: ObservableObject {
                 }
 
                 let pointing = PointingTagParser.parse(from: result.text)
-                let spokenText = drawnFromPointSentence ?? pointing.spokenText
+                // A drawing turn's words carry SHAPE and HIGHLIGHT tags too; none goes into the history.
+                let spokenText = drawnFromPointSentence
+                    ?? (drawingCapture != nil ? ShapeTagParser.parse(from: result.text).spokenText : pointing.spokenText)
                 if pointing.hasPoint {
                     timer?.mark(.tagParsed)
                     timer?.setPointParsed(true)

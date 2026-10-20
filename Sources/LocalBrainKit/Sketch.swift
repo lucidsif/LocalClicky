@@ -34,6 +34,19 @@ public enum SketchLimits {
     /// Spoken when the model's reply holds no valid tag.
     public static let failureSentence = "i could not draw that one."
 
+    /// Spoken when tags closed but the reply holds no sentence (the prompt asks for one; a screen reader user needs it).
+    public static let drawnSentence = "here is the drawing, in the middle of your screen."
+
+    /// What a freeform sketch speaks: the failure sentence with no valid tag, else the reply's own words with
+    /// every complete tag removed and a tag cut off by the token cap dropped, else `drawnSentence`.
+    public static func spokenSentence(in reply: String, closedTags: Int) -> String {
+        guard closedTags > 0 else { return failureSentence }
+        let words = ShapeTagParser.stripAllTags(from: reply)
+            .replacingOccurrences(of: #"\[[^\[\]]*$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return words.isEmpty ? drawnSentence : words
+    }
+
     /// Whether a freeform sketch may draw this tag: shapes only (the prompt has no HIGHLIGHT) and at most `maxTags`.
     public static func admits(_ drawing: InkDrawing, alreadyClosed: Int) -> Bool {
         guard case .shape = drawing else { return false }
@@ -103,12 +116,16 @@ public enum SketchIntent {
 
 public enum ClearMarksIntent {
     /// "clear that", "erase the drawing", "wipe the board". False for a clear
-    /// that is about something else ("clear my inbox", "clear the cache").
+    /// that is about something else ("clear my inbox", "clear the cache"), and for
+    /// a bare "that" after remove, undo or get rid of ("undo that" after a click
+    /// turn undoes nothing that was drawn): those verbs need a drawing object.
     public static func wants(_ transcript: String) -> Bool {
         let text = transcript.lowercased()
-        let objects = "the screen|that drawing|the drawings?|your drawings?|the sketch|the marks|your marks|what you drew|the board|the grid|tic tac toe|that"
-        let pattern = #"\b(?:clear|erase|wipe|remove|get rid of|undo)\s+(?:all\s+)?(?:of\s+)?(?:\#(objects))(?:\s+(?:please|now|again|for me))?[\s.!?]*$"#
-        return text.range(of: pattern, options: .regularExpression) != nil
+        let drawing = "the screen|that drawing|the drawings?|your drawings?|the sketch|the marks|your marks|what you drew|the board|the grid|tic tac toe"
+        let tail = #"(?:\s+(?:please|now|again|for me))?[\s.!?]*$"#
+        let withObject = #"\b(?:clear|erase|wipe|remove|get rid of|undo)\s+(?:all\s+)?(?:of\s+)?(?:\#(drawing))"# + tail
+        let bareThat = #"\b(?:clear|erase|wipe)\s+that"# + tail
+        return [withObject, bareThat].contains { text.range(of: $0, options: .regularExpression) != nil }
     }
 }
 

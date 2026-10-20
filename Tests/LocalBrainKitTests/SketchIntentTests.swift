@@ -42,11 +42,12 @@ final class SketchIntentTests: XCTestCase {
 
     func testClearMarksWords() {
         for words in ["clear that", "clear that drawing", "erase the drawing", "wipe the board", "remove your marks",
-                      "get rid of that", "undo the sketch", "can you clear the screen please", "Clear that!"] {
+                      "get rid of the drawing", "undo the sketch", "can you clear the screen please", "Clear that!"] {
             XCTAssertTrue(ClearMarksIntent.wants(words), words)
         }
         for words in ["clear my inbox", "clear the cache", "delete that email", "remove the app", "clear that email",
-                      "draw a box", "what is clear"] {
+                      "draw a box", "what is clear", "undo that", "remove that", "get rid of that",
+                      "can you undo that please", "remove that email"] {
             XCTAssertFalse(ClearMarksIntent.wants(words), words)
         }
     }

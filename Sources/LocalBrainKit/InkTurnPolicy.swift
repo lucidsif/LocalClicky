@@ -19,14 +19,10 @@ public struct InkTurnPlan: Equatable, Sendable {
     public let kind: InkQuestionKind
     /// The X-Clicky-Turn value. Naming keeps the measured 9B route; explain names itself for the log and goes to Holo35.
     public let turnHeader: String
-    public let sendsCloseUp: Bool
     /// False for naming (A1FPC), true for explain.
     public let sendsAccessibilityBlock: Bool
-    public let sendsMarkLine: Bool
-    public let sendsEnvironmentLine: Bool
     /// False for naming (the measured request has none), true for explain.
     public let sendsHistory: Bool
-    public let answerMaxTokens: Int
 }
 
 public enum InkTurnPolicy {
@@ -36,12 +32,10 @@ public enum InkTurnPolicy {
         switch InkQuestion.kind(transcript) {
         case .naming:
             return InkTurnPlan(kind: .naming, turnHeader: OllamaClient.inkDescribeTurn,
-                               sendsCloseUp: true, sendsAccessibilityBlock: false, sendsMarkLine: true,
-                               sendsEnvironmentLine: false, sendsHistory: false, answerMaxTokens: 320)
+                               sendsAccessibilityBlock: false, sendsHistory: false)
         case .explain:
             return InkTurnPlan(kind: .explain, turnHeader: OllamaClient.inkExplainTurn,
-                               sendsCloseUp: true, sendsAccessibilityBlock: true, sendsMarkLine: true,
-                               sendsEnvironmentLine: false, sendsHistory: true, answerMaxTokens: 320)
+                               sendsAccessibilityBlock: true, sendsHistory: true)
         }
     }
 
@@ -75,7 +69,7 @@ public enum InkQuestion {
     ]
 
     private static let namingPatterns: [String] = [
-        #"^(?:(?:can|could|would|will) you )?what(?:'s| is|s) (?:this|that|it)(?: (?:one|thing|here|right here|there|called|exactly))?$"#,
+        #"^(?:(?:can|could|would|will) you )?what(?:'s| is|s) (?:this|that|it)(?: (?:one|thing|here|right here|there|called|exactly|thing here|button|icon|control|option|item|row|word))?$"#,
         #"^(?:(?:can|could|would|will) you )?tell me what (?:this|that|it) is(?: called)?$"#,
         #"^do you know what (?:this|that|it) is$"#,
         #"^what am i looking at(?: here)?$"#,
