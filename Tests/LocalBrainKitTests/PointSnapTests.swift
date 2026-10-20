@@ -2,8 +2,8 @@ import XCTest
 @testable import LocalBrainKit
 
 final class PointSnapTests: XCTestCase {
-    private func window(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ title: String? = nil) -> SnapWindow {
-        SnapWindow(title: title, frame: CGRect(x: x, y: y, width: w, height: h))
+    private func window(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ title: String? = nil, owner: String? = nil) -> SnapWindow {
+        SnapWindow(title: title, owner: owner, frame: CGRect(x: x, y: y, width: w, height: h))
     }
 
     // MARK: window
@@ -17,14 +17,60 @@ final class PointSnapTests: XCTestCase {
         XCTAssertEqual(snap?.matchedLabel, "Claude")
     }
 
-    func testAMenuBarPickGoesToTheNearestWindowBelowIt() {
-        // y 14 is the menu bar strip, above every window.
-        let windows = [window(400, 38, 600, 700, "Claude"), window(1100, 100, 300, 300, "Notes")]
+    func testAMenuBarPointGoesToTheFrontmostWindowNotTheNearerBackgroundOne() {
+        // y 14 is the menu bar strip. A maximized background window sits right under it (11 points away); the
+        // frontmost window, first in the list, is 86 points away and wins.
+        let windows = [window(400, 100, 600, 700, "Claude"), window(0, 25, 1440, 875, "Desktop Notes")]
         let snap = PointSnap.windowSnap(modelPoint: CGPoint(x: 650, y: 14), windows: windows)
-        XCTAssertEqual(snap?.point, CGPoint(x: 700, y: 52))
-        // Nearest by distance, not by list position.
-        let other = PointSnap.windowSnap(modelPoint: CGPoint(x: 1250, y: 14), windows: windows)
-        XCTAssertEqual(other?.matchedLabel, "Notes")
+        XCTAssertEqual(snap?.point, CGPoint(x: 700, y: 114))
+        XCTAssertEqual(snap?.matchedLabel, "Claude")
+        // The strip is the top 30 points of the display: y 29 is in it, y 31 is not and holds no window here.
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: CGPoint(x: 100, y: 29), windows: windows)?.matchedLabel, "Claude")
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: CGPoint(x: 100, y: 31), windows: windows)?.matchedLabel, "Desktop Notes")
+        // On a display whose top edge is above the primary's, the strip follows that display.
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: CGPoint(x: 650, y: -460), windows: windows, displayTop: -480)?.matchedLabel, "Claude")
+    }
+
+    func testATitleOrAppNameMatchBeatsAGeometricMatch() {
+        // The point is inside "Notes" (front), the request is for the chat window, which is elsewhere.
+        let windows = [window(500, 300, 400, 300, "Notes"), window(1000, 100, 400, 400, "Chat")]
+        let point = CGPoint(x: 600, y: 400)
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: point, object: "the chat window", windows: windows)?.matchedLabel, "Chat")
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: point, object: "the title bar of the chat window", windows: windows)?.matchedLabel, "Chat")
+        // The model's own label counts when the words name no object.
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: point, object: nil, label: "chat window", windows: windows)?.matchedLabel, "Chat")
+        // The owning app's name counts, with a window title that says nothing of it.
+        let apps = [window(500, 300, 400, 300, "Untitled", owner: "TextEdit"), window(1000, 100, 400, 400, "Inbox", owner: "Mail")]
+        let mail = PointSnap.windowSnap(modelPoint: point, object: "the mail app", windows: apps)
+        XCTAssertEqual(mail?.point, CGPoint(x: 1200, y: 114))
+        XCTAssertEqual(mail?.matchedLabel, "Inbox")
+        // A name that matches no window falls back to the point.
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: point, object: "the zebra window", windows: windows)?.matchedLabel, "Notes")
+        // The best score wins, then the frontmost.
+        let twins = [window(0, 100, 300, 300, "Chat", owner: "A"), window(400, 100, 300, 300, "Chat", owner: "B")]
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: CGPoint(x: 500, y: 200), object: "chat", windows: twins)?.point.x, 150)
+    }
+
+    func testADockIconPointWithNoWindowUnderItIsLeftAlone() {
+        // The model correctly pointed at the Dock icon of an app that has no window open.
+        let windows = [window(400, 100, 600, 700, "Claude")]
+        XCTAssertNil(PointSnap.windowSnap(modelPoint: CGPoint(x: 1200, y: 880), object: "the music app", windows: windows))
+    }
+
+    func testTheNearestWindowIsUsedOnlyWithinSixtyPoints() {
+        let windows = [window(400, 100, 600, 700, "Claude")]
+        // 59 points left of the window's left edge, then 61.
+        XCTAssertEqual(PointSnap.windowSnap(modelPoint: CGPoint(x: 341, y: 400), windows: windows)?.matchedLabel, "Claude")
+        XCTAssertNil(PointSnap.windowSnap(modelPoint: CGPoint(x: 339, y: 400), windows: windows))
+        XCTAssertEqual(PointSnap.nearestWindowRadius, 60)
+    }
+
+    func testTheTitleBarPointIsClampedBelowTheMenuBarStrip() {
+        // The window's top edge is above the display: its title bar centre would be in the menu bar.
+        let snap = PointSnap.windowSnap(modelPoint: CGPoint(x: 500, y: 200), windows: [window(400, -20, 600, 700, "Tall")])
+        XCTAssertEqual(snap?.point.y, 30)
+        let other = PointSnap.windowSnap(modelPoint: CGPoint(x: 500, y: -300), windows: [window(400, -500, 600, 700, "Above")], displayTop: -480)
+        XCTAssertEqual(other?.point.y, -450)
     }
 
     func testTheFrontmostWindowThatHoldsThePointWins() {
@@ -98,6 +144,59 @@ final class PointSnapTests: XCTestCase {
         let small = element("Send message", 400, 200)
         XCTAssertEqual(PointSnap.controlSnap(modelPoint: CGPoint(x: 410, y: 210), label: "send message", candidates: [big, small]).point,
                        CGPoint(x: 440, y: 215))
+    }
+
+    func testAContainerIsNeverAControlEvenWhenItsLabelScoresOne() {
+        let group = SnapCandidate(labels: ["Send"], frame: CGRect(x: 400, y: 200, width: 100, height: 60), role: "AXGroup")
+        XCTAssertEqual(PointSnap.labelScore("send", "Send"), 1)
+        XCTAssertEqual(PointSnap.controlSnap(modelPoint: CGPoint(x: 410, y: 210), label: "send", candidates: [group]).kind, .none)
+        for role in ["AXWindow", "AXSheet", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXWebArea", "AXToolbar", "AXLayoutArea", "AXApplication"] {
+            let container = SnapCandidate(labels: ["Send"], frame: CGRect(x: 400, y: 200, width: 100, height: 60), role: role)
+            XCTAssertEqual(PointSnap.controlSnap(modelPoint: CGPoint(x: 410, y: 210), label: "send", candidates: [container]).kind, .none, role)
+        }
+        // The same frame as a button is a control.
+        let button = SnapCandidate(labels: ["Send"], frame: CGRect(x: 400, y: 200, width: 100, height: 60), role: "AXButton")
+        XCTAssertEqual(PointSnap.controlSnap(modelPoint: CGPoint(x: 410, y: 210), label: "send", candidates: [button]).kind, .ax)
+    }
+
+    func testALargeMatchingElementWithNoSmallMatchLeavesThePointWhereItIs() {
+        let model = CGPoint(x: 410, y: 210)
+        let large = SnapCandidate(labels: ["Send message"], frame: CGRect(x: 0, y: 0, width: 800, height: 600), role: "AXGroup")
+        XCTAssertEqual(PointSnap.controlSnap(modelPoint: model, label: "send message", candidates: [large]),
+                       PointSnapResult(point: model, kind: .none, matchedLabel: nil))
+        // Without a container role, the size cap alone drops it: 401 wide and 301 high are too big, 400 x 300 is not.
+        for (width, height) in [(401.0, 100.0), (100.0, 301.0)] {
+            let wide = SnapCandidate(labels: ["Send message"], frame: CGRect(x: 400, y: 200, width: width, height: height))
+            XCTAssertEqual(PointSnap.controlSnap(modelPoint: model, label: "send message", candidates: [wide]).kind, .none)
+        }
+        let edge = SnapCandidate(labels: ["Send message"], frame: CGRect(x: 400, y: 200, width: 400, height: 300))
+        XCTAssertEqual(PointSnap.controlSnap(modelPoint: model, label: "send message", candidates: [edge]).kind, .ax)
+    }
+
+    func testTheSmallestContainingMatchBeatsABetterScoringLargerOne() {
+        let exact = SnapCandidate(labels: ["Send"], frame: CGRect(x: 400, y: 200, width: 300, height: 200), role: "AXButton")
+        let partial = SnapCandidate(labels: ["Send button"], frame: CGRect(x: 405, y: 205, width: 40, height: 20), role: "AXButton")
+        let snap = PointSnap.controlSnap(modelPoint: CGPoint(x: 410, y: 210), label: "send", candidates: [exact, partial])
+        XCTAssertEqual(snap.matchedLabel, "Send button")
+        XCTAssertEqual(snap.point, CGPoint(x: 425, y: 215))
+    }
+
+    // What the user typed is never a label: a record with only a value is not a candidate, so it cannot be
+    // matched, snapped to or logged as matchedLabel, even though its text scores 1 against the model's label.
+    func testATextFieldsTypedValueIsNeverACandidateLabel() {
+        let frame = CGRect(x: 400, y: 200, width: 200, height: 30)
+        let typed = AccessibilityElementRecord(role: "AXTextField", value: "my bank password hunter2", frame: frame)
+        XCTAssertEqual(PointSnap.labelScore("my bank password hunter2", "my bank password hunter2"), 1)
+        XCTAssertTrue(PointSnap.candidates(from: [typed]).isEmpty)
+        XCTAssertEqual(PointSnap.controlSnap(modelPoint: CGPoint(x: 410, y: 210), label: "my bank password hunter2",
+                                             candidates: PointSnap.candidates(from: [typed])).kind, .none)
+        // With a title, only the title is a label; the value stays out.
+        let titled = AccessibilityElementRecord(role: "AXTextField", title: "Search", value: "hunter2", description: "Search field", frame: frame)
+        XCTAssertEqual(PointSnap.candidates(from: [titled]), [SnapCandidate(labels: ["Search", "Search field"], frame: frame, role: "AXTextField")])
+        // Secure and frameless records are left out as before.
+        XCTAssertTrue(PointSnap.candidates(from: [AccessibilityElementRecord(role: "AXSecureTextField", title: "Password", frame: frame),
+                                                  AccessibilityElementRecord(role: "AXButton", title: "Send", isSecure: true, frame: frame),
+                                                  AccessibilityElementRecord(role: "AXButton", title: "Send")]).isEmpty)
     }
 
     func testLabelMatching() {

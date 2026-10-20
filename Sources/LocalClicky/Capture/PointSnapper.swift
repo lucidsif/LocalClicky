@@ -26,15 +26,18 @@ enum PointSnapper {
         let snappedScreenPoint: CGPoint?
     }
 
-    static func snap(imagePoint: CGPoint, label: String?, namesWindow: Bool, mapping: ScreenMapping) async -> Outcome {
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 0
+    /// `primaryHeight` is the primary screen's height in points, read by the caller on the main actor
+    /// (NSScreen is not read from here).
+    static func snap(imagePoint: CGPoint, label: String?, object: String?, namesWindow: Bool, mapping: ScreenMapping,
+                     primaryHeight: CGFloat) async -> Outcome {
         let modelPoint = mapping.cgGlobalPoint(forDisplayLocalPoint: mapping.displayLocalPoint(forImagePoint: imagePoint),
                                                primaryScreenHeight: primaryHeight)
         let displayRect = CGRect(x: mapping.displayFrame.minX, y: primaryHeight - mapping.displayFrame.maxY,
                                  width: mapping.displayFrame.width, height: mapping.displayFrame.height)
         let result: PointSnapResult
         if namesWindow {
-            result = PointSnap.windowSnap(modelPoint: modelPoint, windows: onScreenWindows(on: displayRect))
+            result = PointSnap.windowSnap(modelPoint: modelPoint, object: object, label: label,
+                                          windows: onScreenWindows(on: displayRect), displayTop: displayRect.minY)
                 ?? PointSnapResult(point: modelPoint, kind: .none, matchedLabel: nil)
         } else {
             result = await controlSnap(modelPoint: modelPoint, label: label)
@@ -50,8 +53,6 @@ enum PointSnapper {
 
     // MARK: - Control
 
-    private static let maxLabelCharacters = 80
-
     private static func controlSnap(modelPoint: CGPoint, label: String?) async -> PointSnapResult {
         let unchanged = PointSnapResult(point: modelPoint, kind: .none, matchedLabel: nil)
         guard let label, !label.trimmingCharacters(in: .whitespaces).isEmpty else { return unchanged }
@@ -60,14 +61,7 @@ enum PointSnapper {
             atCGPoints: PointSnap.probePoints(around: modelPoint, radius: radius),
             inkRect: CGRect(x: modelPoint.x - radius, y: modelPoint.y - radius, width: 2 * radius, height: 2 * radius),
             budgetSeconds: PointSnap.budgetSeconds)
-        let candidates = records.compactMap { record -> SnapCandidate? in
-            guard !record.isSecure, record.role != "AXSecureTextField", !record.frame.isEmpty else { return nil }
-            let labels = [record.title, record.description, record.value]
-                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .map { String($0.prefix(maxLabelCharacters)) }
-            return labels.isEmpty ? nil : SnapCandidate(labels: labels, frame: record.frame)
-        }
+        let candidates = PointSnap.candidates(from: records)
         return PointSnap.controlSnap(modelPoint: modelPoint, label: label, candidates: candidates)
     }
 
@@ -87,8 +81,7 @@ enum PointSnapper {
                   let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
                   bounds.intersects(displayRect) else { return nil }
             let title = (entry[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                ?? entry[kCGWindowOwnerName as String] as? String
-            return SnapWindow(title: title, frame: bounds)
+            return SnapWindow(title: title, owner: entry[kCGWindowOwnerName as String] as? String, frame: bounds)
         }
     }
 }

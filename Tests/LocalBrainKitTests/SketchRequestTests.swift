@@ -40,12 +40,28 @@ final class SketchRequestTests: XCTestCase {
                       "place an order", "make a house", "add two to that", "put that on my clipboard", "make sure it works",
                       "show me where the chat window is", "show me where the star is", "show me the circle of fifths",
                       "make a box around the error", "add a line to the title", "put a star next to the menu",
-                      "create a new tab", "give me the time"] {
+                      "create a new tab", "give me the time",
+                      "show me the star wars trailer", "show me the box score", "give me a line from the poem",
+                      "show me the arrow keys"] {
             XCTAssertNil(SketchIntent.figure(words), words)
         }
         // The draw verbs still reach freeform.
         XCTAssertEqual(SketchIntent.figure("draw a house"), .freeform("house"))
         XCTAssertEqual(SketchIntent.figure("show me how to draw a star"), .star)
+    }
+
+    // The object verbs need the whole object to be the figure: the name, a board word, placement, size, moves.
+    func testTheObjectVerbsStillReachAFigureWithABoardWordPlacementSizeOrMoves() {
+        XCTAssertEqual(SketchIntent.figure("put a tic tac toe on the bottom left of my screen"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("put up a tic tac toe"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("make a tic tac toe board"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("give me a big tic tac toe grid in the middle"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("put a tic tac toe with an x in the center"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("create an empty tic tac toe board"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("put a tic tac toe game in progress on the screen"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("make a smiley face"), .smiley)
+        XCTAssertEqual(SketchIntent.figure("add a small star in the top right corner"), .star)
+        XCTAssertEqual(SketchIntent.figure("show me a check mark"), .check)
     }
 
     func testRoutingOfTheNewVerbsAndNothingThatWorkedBeforeChanges() {

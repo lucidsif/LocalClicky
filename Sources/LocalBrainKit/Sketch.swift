@@ -164,8 +164,9 @@ public enum SketchIntent {
 
     /// The whole request: figure, placement, size and (tic tac toe) the board. Nil when the words do not ask
     /// for a sketch. draw, sketch and doodle also reach a freeform figure; put, place, make, show me, give me,
-    /// add and create reach a figure only when the object after the verb is a template figure, so "make a
-    /// note" and "add a reminder" are never sketches.
+    /// add and create reach a figure only when the whole object after the verb is a template figure (the name,
+    /// then at most a board word, a placement, a size or a tic tac toe move), so "make a note", "add a reminder"
+    /// and "show me the box score" are never sketches.
     public static func parse(_ transcript: String) -> SketchRequest? {
         var text = transcript.lowercased()
         // "draw up", "draw conclusions" and "draw attention" are not drawing.
@@ -213,12 +214,21 @@ public enum SketchIntent {
             while let first = words.first, ["a", "an", "the", "some", "of", "up"].contains(first) { words.removeFirst() }
             guard !words.isEmpty else { if drawing { return nil } else { continue } }
             let phrase = words.prefix(4).joined(separator: " ")
+            let whole = words.joined(separator: " ")
             var figure: SketchFigure?
-            for (pattern, candidate) in named where phrase.range(of: pattern, options: .regularExpression) != nil {
-                figure = candidate
-                break
+            var figureRange: Range<String.Index>?
+            for (pattern, candidate) in named {
+                if let range = whole.range(of: pattern, options: .regularExpression) {
+                    figure = candidate
+                    figureRange = range
+                    break
+                }
             }
             if figure == nil, drawing { figure = .freeform(phrase) }
+            // The other verbs need the whole object to be the figure ("show me the star wars trailer" and
+            // "show me the box score" are not sketches): the name, then at most a board word.
+            if !drawing, let figureRange,
+               !isFigureNameAlone(after: whole[figureRange.upperBound...], dropping: mentionsBoard ? demoCue : nil) { continue }
             // "show me the circle of fifths" is not a request for a circle.
             if !drawing, words.dropFirst().contains("of") { continue }
             guard let figure else { continue }
@@ -238,6 +248,19 @@ public enum SketchIntent {
     }
 
     private static let emptyBoardString = SketchTemplate.emptyBoard
+
+    /// Words that may follow a figure name and still be that figure ("tic tac toe board", "smiley face"), and the
+    /// connectors left behind where a placement or a move was taken out ("a tic tac toe with an x in the middle").
+    private static let figureTrailers: Set<String> = ["board", "grid", "game", "face", "mark", "shape"]
+    private static let connectors: Set<String> = ["with", "and", "then", "a", "an", "the"]
+
+    /// True when nothing but a trailer or connector word follows the figure name. `cue` is a pattern for further
+    /// board words to ignore (the demo board cue).
+    private static func isFigureNameAlone(after tail: Substring, dropping cue: String?) -> Bool {
+        var rest = String(tail)
+        if let cue { rest = rest.replacingOccurrences(of: cue, with: " ", options: .regularExpression) }
+        return rest.split(separator: " ").allSatisfy { figureTrailers.contains(String($0)) || connectors.contains(String($0)) }
+    }
 
     /// "tic tac toe", "tic-tac-toe", "tictac", "tick tack toe": speech to text writes it every way.
     static let ticTacToeWords = #"ti[ck]{1,2}[ -]?ta[ck]{1,2}(?:[ -]?toes?)?"#

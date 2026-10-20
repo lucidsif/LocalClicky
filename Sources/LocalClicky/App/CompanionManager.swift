@@ -200,6 +200,9 @@ final class CompanionManager: ObservableObject {
         /// Where the early flight went (global AppKit points, after the snap): a click turn clicks there.
         var earlyDispatchedLocation: CGPoint?
         var isFinalized = false
+        /// The snap of the early point, running or done. The final path awaits it when the stream ended before
+        /// the early flight, so one point is never snapped (harvested) twice.
+        var earlySnap: Task<CGPoint, Never>?
     }
 
     /// What the pointing step of one turn knows besides the model's point: the words the model got, the
@@ -208,6 +211,8 @@ final class CompanionManager: ObservableObject {
     private struct PointingTurnInfo: Sendable {
         let transcript: String
         let substitutedObject: String?
+        /// The requested object ("the chat window"): the substituted one, else the words' own. Nil when none.
+        let object: String?
         let namesWindow: Bool
     }
 
@@ -1452,6 +1457,7 @@ final class CompanionManager: ObservableObject {
                     userText += "\n\n" + LocalPrompts.windowTargetLine
                 }
                 let pointingInfo = PointingTurnInfo(transcript: transcript, substitutedObject: followUp?.substitutedObject,
+                                                    object: followUp?.substitutedObject ?? PointingFollowUp.object(in: transcript),
                                                     namesWindow: wantsPointing && windowLine)
                 if let usableInk {
                     userText += "\n\n" + LocalPrompts.inkAddendum(
@@ -1558,14 +1564,19 @@ final class CompanionManager: ObservableObject {
                                 guard let self,
                                       !pointingState.isFinalized,
                                       self.currentResponseIdentifier == responseIdentifier else { return }
-                                // Snapped to the window or control the model named (at most about 150 ms). The
-                                // reconcile below compares the model's own points, so it gets `center`.
-                                let target = await self.snappedImagePoint(center, label: tag.label, info: pointingInfo, in: capture)
-                                guard !pointingState.isFinalized,
-                                      self.currentResponseIdentifier == responseIdentifier else { return }
+                                // The tag is parsed now, so the timing is marked before the snap. The reconcile below
+                                // compares the model's own points, so it gets `center`.
                                 pointingState.earlyDispatchedImagePoint = center
                                 timer?.mark(.tagParsed)
                                 timer?.setPointParsed(true)
+                                // Snapped to the window or control the model named (at most about 150 ms).
+                                let snap = Task { @MainActor in
+                                    await self.snappedImagePoint(center, label: tag.label, info: pointingInfo, in: capture)
+                                }
+                                pointingState.earlySnap = snap
+                                let target = await snap.value
+                                guard !pointingState.isFinalized,
+                                      self.currentResponseIdentifier == responseIdentifier else { return }
                                 pointingState.earlyDispatchedLocation = self.dispatchPointerFlight(toImagePoint: target, label: tag.label, in: capture)
                             }
                         }
@@ -1646,6 +1657,10 @@ final class CompanionManager: ObservableObject {
                         // The early flight went to the snapped point; a click goes there too.
                         if let early = pointingState.earlyDispatchedLocation {
                             clickLocation = early
+                        } else if let snap = pointingState.earlySnap {
+                            // The stream ended while the early point was being snapped: use that snap.
+                            let target = await snap.value
+                            clickLocation = dispatchPointerFlight(toImagePoint: target, label: pointing.label, in: capture)
                         } else if let center = pointing.centerInImagePixels {
                             clickLocation = globalScreenLocation(forImagePoint: center, in: capture)
                         }
@@ -2240,8 +2255,10 @@ final class CompanionManager: ObservableObject {
     /// about PointSnap.budgetSeconds.
     private func snappedImagePoint(_ point: CGPoint, label: String?, info: PointingTurnInfo,
                                    in capture: CompanionScreenCapture) async -> CGPoint {
-        let outcome = await PointSnapper.snap(imagePoint: point, label: label, namesWindow: info.namesWindow,
-                                              mapping: screenMapping(for: capture))
+        // Read here, on the main actor; the snap itself runs off it.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 0
+        let outcome = await PointSnapper.snap(imagePoint: point, label: label, object: info.object, namesWindow: info.namesWindow,
+                                              mapping: screenMapping(for: capture), primaryHeight: primaryHeight)
         print("📍 Snap: \(outcome.result.kind.rawValue) (\(Int(point.x)), \(Int(point.y))) px → (\(Int(outcome.imagePoint.x)), \(Int(outcome.imagePoint.y))) px")
         // TEMP debug logger (remove at project end)
         TempAppDebugLog.append("point", ["transcript": info.transcript,

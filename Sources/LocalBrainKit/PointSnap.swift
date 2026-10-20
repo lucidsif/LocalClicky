@@ -7,11 +7,15 @@
 //  little off its control. After the model answers, the app moves the pointer here, with no change to the
 //  prompt:
 //
-//    window request  the model's point is replaced by the title bar centre of the window that holds it, else
-//                    of the nearest window (a menu bar pick sits directly above the window it means).
+//    window request  the model's point is replaced by the title bar centre of the window it means: one whose
+//                    title or app name matches the requested object or the model's label; else, for a point in
+//                    the menu bar strip, the frontmost window; else the window that holds the point; else the
+//                    nearest window within `nearestWindowRadius`. With none of those the point stays (the model
+//                    pointing at the Dock icon of an app with no window is right).
 //    control request the Accessibility element under the point is kept when its label fuzzy-matches the
 //                    model's label; otherwise the best match within `searchRadius` is used; with no match the
-//                    point stays where the model put it.
+//                    point stays where the model put it. Containers and anything larger than
+//                    `maximumControlSize` are never a control.
 //
 //  Every point and frame here is in Core Graphics global points (origin top-left of the primary display, y
 //  down): the space of Accessibility frames and window bounds. ScreenMapping converts to and from the
@@ -26,20 +30,26 @@ import Foundation
 public struct SnapCandidate: Equatable, Sendable {
     public var labels: [String]
     public var frame: CGRect
+    /// The AX role, for example "AXButton". Nil when unknown.
+    public var role: String?
 
-    public init(labels: [String], frame: CGRect) {
+    public init(labels: [String], frame: CGRect, role: String? = nil) {
         self.labels = labels
         self.frame = frame
+        self.role = role
     }
 }
 
 /// One on-screen window, in the order the window server lists them (front to back).
 public struct SnapWindow: Equatable, Sendable {
     public var title: String?
+    /// The owning app's name.
+    public var owner: String?
     public var frame: CGRect
 
-    public init(title: String? = nil, frame: CGRect) {
+    public init(title: String? = nil, owner: String? = nil, frame: CGRect) {
         self.title = title
+        self.owner = owner
         self.frame = frame
     }
 }
@@ -69,38 +79,93 @@ public enum PointSnap {
     public static let titleBarInset: CGFloat = 14
     /// A window smaller than this is a badge or a status item, not a window to point at.
     public static let minimumWindowSize = CGSize(width: 120, height: 80)
+    /// A model point this close to the top of the display is on the menu bar strip.
+    public static let menuBarStrip: CGFloat = 30
+    /// A window may be the nearest one to the model's point only within this distance.
+    public static let nearestWindowRadius: CGFloat = 60
+    /// A control is never larger than this: a bigger element is a container or a pane.
+    public static let maximumControlSize = CGSize(width: 400, height: 300)
+    /// Roles of elements that hold other elements. Never a control, whatever their label says.
+    static let containerRoles: Set<String> = ["AXWindow", "AXSheet", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXWebArea",
+                                              "AXToolbar", "AXLayoutArea", "AXApplication"]
     /// The most the Accessibility reads may add to a turn.
     public static let budgetSeconds: Double = 0.15
 
     // MARK: - Window
 
-    /// The title bar centre of the window that contains `modelPoint`, else of the nearest window (the first
-    /// listed wins a tie, so the frontmost). Nil when there is no window to choose from.
-    public static func windowSnap(modelPoint: CGPoint, windows: [SnapWindow]) -> PointSnapResult? {
+    /// The title bar centre of the window the request means, in this order: (a) a window whose title or app name
+    /// matches `object` or `label` (`labelScore`), the best score and then the frontmost; (b) for a point in the
+    /// menu bar strip, the frontmost window; (c) the topmost window that contains the point; (d) the nearest
+    /// window, within `nearestWindowRadius`. Nil when none applies, so the model's point stands. `displayTop` is
+    /// the top edge of the display the point is on; the result never sits in the menu bar strip below it.
+    public static func windowSnap(modelPoint: CGPoint, object: String? = nil, label: String? = nil,
+                                  windows: [SnapWindow], displayTop: CGFloat = 0) -> PointSnapResult? {
         let usable = windows.filter {
             $0.frame.width >= minimumWindowSize.width && $0.frame.height >= minimumWindowSize.height
         }
         guard !usable.isEmpty else { return nil }
-        let chosen = usable.first { $0.frame.contains(modelPoint) }
-            ?? usable.min { distance(from: modelPoint, to: $0.frame) < distance(from: modelPoint, to: $1.frame) }!
+        let chosen = titleMatch(object: object, label: label, in: usable)
+            ?? (modelPoint.y < displayTop + menuBarStrip ? usable.first : nil)
+            ?? usable.first { $0.frame.contains(modelPoint) }
+            ?? usable.min { distance(from: modelPoint, to: $0.frame) < distance(from: modelPoint, to: $1.frame) }
+                .flatMap { distance(from: modelPoint, to: $0.frame) <= nearestWindowRadius ? $0 : nil }
+        guard let chosen else { return nil }
         let inset = min(titleBarInset, chosen.frame.height / 2)
-        return PointSnapResult(point: CGPoint(x: chosen.frame.midX, y: chosen.frame.minY + inset),
-                               kind: .window, matchedLabel: chosen.title)
+        return PointSnapResult(point: CGPoint(x: chosen.frame.midX, y: max(chosen.frame.minY + inset, displayTop + menuBarStrip)),
+                               kind: .window, matchedLabel: chosen.title ?? chosen.owner)
+    }
+
+    /// The window whose title or app name best matches the object or the label, at least `labelThreshold`; the
+    /// first listed (frontmost) wins a tie. The cue words ("window", "app", "title bar") are not part of a name.
+    private static func titleMatch(object: String?, label: String?, in windows: [SnapWindow]) -> SnapWindow? {
+        let queries = [object, label].compactMap { $0 }.map(withoutWindowCues).filter { !tokens($0).isEmpty }
+        guard !queries.isEmpty else { return nil }
+        var best: (window: SnapWindow, score: Double)?
+        for window in windows {
+            let names = [window.title, window.owner].compactMap { $0 }
+            let score = queries.flatMap { query in names.map { labelScore(query, $0) } }.max() ?? 0
+            if score >= labelThreshold, score > (best?.score ?? 0) { best = (window, score) }
+        }
+        return best?.window
+    }
+
+    private static func withoutWindowCues(_ text: String) -> String {
+        text.lowercased().replacingOccurrences(of: #"\b(?:windows?|apps?|applications?|title ?bars?)\b"#, with: " ",
+                                               options: .regularExpression)
     }
 
     // MARK: - Control
 
+    /// The longest label text kept for one candidate.
+    static let maxLabelCharacters = 80
+
+    /// Snap candidates from the Accessibility records near the point. A label is the title or the description,
+    /// never the value: a text field's value is what the user typed, so it is never a label, a match or a log
+    /// line. Secure fields, records with no frame and records with no label are left out.
+    public static func candidates(from records: [AccessibilityElementRecord]) -> [SnapCandidate] {
+        records.compactMap { record -> SnapCandidate? in
+            guard !record.isSecure, record.role != "AXSecureTextField", !record.frame.isEmpty else { return nil }
+            let labels = [record.title, record.description]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .map { String($0.prefix(maxLabelCharacters)) }
+            return labels.isEmpty ? nil : SnapCandidate(labels: labels, frame: record.frame, role: record.role)
+        }
+    }
+
     /// The model's point moved onto the element it named. Among candidates whose label matches `label`
-    /// (`labelScore` at least `labelThreshold`): one that contains the point (the hit) wins, the best score
-    /// first and the smallest frame on a tie; otherwise the best score within `radius`, the nearest on a tie.
-    /// The result is the centre of that element's frame. No label, no match or an empty frame gives `.none`
-    /// at the model's own point.
+    /// (`labelScore` at least `labelThreshold`), leaving out containers (`containerRoles`) and anything larger
+    /// than `maximumControlSize`: one that contains the point (the hit) wins, the smallest frame first and the
+    /// best score on a tie; otherwise the best score within `radius`, the nearest on a tie. The result is the
+    /// centre of that element's frame. No label, no match or an empty frame gives `.none` at the model's own point.
     public static func controlSnap(modelPoint: CGPoint, label: String?, candidates: [SnapCandidate],
                                    radius: CGFloat = searchRadius) -> PointSnapResult {
         let unchanged = PointSnapResult(point: modelPoint, kind: .none, matchedLabel: nil)
         guard let label, !tokens(label).isEmpty else { return unchanged }
         var best: (candidate: SnapCandidate, score: Double, contains: Bool, distance: CGFloat, area: CGFloat, text: String)?
         for candidate in candidates where !candidate.frame.isEmpty && !candidate.frame.isNull {
+            guard !containerRoles.contains(candidate.role ?? ""),
+                  candidate.frame.width <= maximumControlSize.width, candidate.frame.height <= maximumControlSize.height else { continue }
             guard let (score, text) = candidate.labels.map({ (labelScore(label, $0), $0) }).max(by: { $0.0 < $1.0 }),
                   score >= labelThreshold else { continue }
             let gap = distance(from: modelPoint, to: candidate.frame)
@@ -120,8 +185,8 @@ public enum PointSnap {
                                  than b: (candidate: SnapCandidate, score: Double, contains: Bool, distance: CGFloat, area: CGFloat, text: String)) -> Bool {
         if a.contains != b.contains { return a.contains }
         if a.contains {
-            if a.score != b.score { return a.score > b.score }
-            return a.area < b.area
+            if a.area != b.area { return a.area < b.area }
+            return a.score > b.score
         }
         if a.score != b.score { return a.score > b.score }
         return a.distance < b.distance

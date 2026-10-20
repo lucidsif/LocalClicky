@@ -155,12 +155,16 @@ scripts/release.sh            # build + DMG + publish the GitHub Release (mainta
   where the chat window is"*, *"point at the mail app"*, *"point out claude window"*
   (the article is optional) fly the cursor to the middle of that window's title bar.
   After the model answers, the app moves the point onto the real thing: for a window
-  request, the title bar of the window that holds the point (else the nearest one, so
-  a pick on the menu bar lands on the window below it); for a control request, the
-  Accessibility element under the point if its name matches what the model said, else
-  the best match within 120 points, else the point stays. This adds at most about
+  request, the title bar of the window whose title or app name matches what you asked
+  for, else (for a pick on the menu bar) the frontmost window, else the window that holds
+  the point, else the nearest one within 60 points; with none of those the point stays,
+  so a Dock icon of an app with no window is left alone. For a control request, the
+  Accessibility element under the point if its name matches what the model said (never
+  a text field's contents, never a container or anything bigger than 400 by 300 points),
+  else the best match within 120 points, else the point stays. This adds at most about
   150 ms. *"The chat window bar"* (also box, input, composer, search bar, sidebar) asks
-  for the control, not the window. Each pointing request is its own turn: it does not
+  for the control, not the window; *"the title bar of the chat window"* is a window
+  request, while *"the menu bar"* is a control. Each pointing request is its own turn: it does not
   carry earlier answers along, but a follow-up with no object of its own (*"point out
   to me again"*, *"point to it"*, *"show me again"*, or a bare *"again"* or *"that
   one"* right after a pointing turn) reuses the object of the last request.
@@ -172,8 +176,10 @@ scripts/release.sh            # build + DMG + publish the GitHub Release (mainta
   triangle, star, smiley, cross or check mark (*"draw a smiley face"*); anything else
   (*"draw a house"*) is drawn by the grounding model, at most eight strokes. Besides
   draw, sketch and doodle, the verbs put, place, make, show me, give me, add and
-  create work when what follows is one of those figures (*"put a tic tac toe on the
-  bottom left of my screen"*); *"make a note"* or *"add a reminder"* is never a drawing.
+  create work when what follows is just one of those figures, with at most a board word,
+  a placement, a size or a move (*"put a tic tac toe on the bottom left of my screen"*);
+  *"make a note"*, *"add a reminder"*, *"show me the box score"* and *"show me the star
+  wars trailer"* are never a drawing.
   Placement and size are read from the words: one of nine regions (top left, top, top
   right, left, middle, right, bottom left, bottom, bottom right, with corner, upper,
   lower and centre/center accepted) and small or big, kept fully on screen, and the
@@ -212,7 +218,7 @@ off), the app appends one JSON line per event to `~/.clicky-gateway/debug-app-tu
 spoken sentence), clear turns (transcript, cleared yes or no) and pointing turns
 (transcript, the object substituted for a follow-up, window line yes or no, the model's
 point in screenshot pixels, its label, snap kind window, ax or none, the snapped point
-in screen points, the matched element label or window title). It never logs an image
+in screen points, the matched element title or description, or window title; never a text field's value). It never logs an image
 or screen content beyond that label. To remove it: delete the calls marked
 `// TEMP debug logger (remove at project end)` in
 `Sources/LocalClicky/App/CompanionManager.swift`, then delete

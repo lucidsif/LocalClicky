@@ -91,8 +91,9 @@ look something up online, and is clearly flagged ("checking the web…").
   nouns. `wantsPointing` also catches "where the X is", "find out where ...", "find /
   tell me / show where the ..."; `PointingFollowUp` puts the last pointing object into a
   follow-up ("point out to me again"); `PointSnap` + `PointSnapper` then move the model's
-  point onto the window's title bar or the matching Accessibility element (radius 120 pt,
-  label overlap 0.5, 150 ms budget). Prompt text is never changed for any of this.
+  point onto the matching window's title bar (title or app name, else menu bar, containing,
+  nearest within 60 pt) or the matching small Accessibility element (radius 120 pt, label overlap
+  0.5, no containers, 150 ms budget). "Title bar" is a window cue, "menu bar" a control noun. Prompt text is never changed for any of this.
 - **TEMP debug log**: `TempAppDebugLog` (flag `~/.clicky-gateway/debug.on`, file
   `debug-app-turns.jsonl`) logs sketch, clear and pointing turns; remove at project end
   (README, "Temporary app debug log").

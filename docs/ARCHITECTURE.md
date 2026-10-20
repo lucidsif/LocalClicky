@@ -95,8 +95,9 @@ Three refinements ride on the routes above; each decision is a pure function in
   window or app (the article is optional) and no control gets
   `LocalPrompts.windowTargetLine` after the user's words; the point system prompt is
   unchanged. The control nouns include bar, box, input, composer, text field, search
-  bar and sidebar (so "the chat window bar", "title bar" and "menu bar" are control
-  requests). Grounding turns (point, click, draw) send no history.
+  bar and sidebar (so "the chat window bar" and "menu bar" are control requests).
+  "Title bar" is the exception: it is a window cue, so "point at the title bar of the
+  chat window" gets the window line and the window snap. Grounding turns (point, click, draw) send no history.
 - **Follow-up object** (`PointingFollowUp`): the app keeps the noun phrase of the last
   pointing or click request. A pointing turn with no object of its own gets it put into
   the words sent to the model ("point out to me again" becomes "point out the chat
@@ -109,20 +110,35 @@ Three refinements ride on the routes above; each decision is a pure function in
   model norm1000 point, rescaled by the gateway to screenshot pixels, then
   `ScreenMapping.displayLocalPoint(forImagePoint:)`, then `cgGlobalPoint(...)`; the
   snapped point returns through `imagePoint(forCGGlobalPoint:)`. A window request goes
-  to the title bar centre (top edge plus 14 pt) of the window that contains the point,
-  else the nearest window, from the window server's layer-0 windows with our own,
-  the menu bar and the Dock left out. A control request keeps the Accessibility
+  to the title bar centre (top edge plus 14 pt, never inside the 30 pt menu bar strip)
+  of the window picked in this order, from the window server's layer-0 windows with
+  our own, the menu bar and the Dock left out: (a) one whose title or app name matches
+  the requested object (the substituted or the words' own, "window", "app" and "title
+  bar" dropped) or the model's label, by `labelScore`, even when it does not contain
+  the point; (b) for a point in the top 30 pt of the display, the frontmost window;
+  (c) the topmost window that contains the point; (d) the nearest window, within
+  60 pt; (e) else the model's point stays (a Dock icon of an app with no window).
+  A control request keeps the Accessibility
   element under the point when its label matches the model's label (token overlap
   at least 0.5, `PointSnap.labelScore`), else the best match within
-  `PointSnap.searchRadius` (120 pt), else the model's point. The Accessibility reads
-  share `PointSnap.budgetSeconds` (0.15 s). Early and final cursor dispatch both snap;
-  a click turn clicks where the cursor went. Temperature and screenshot size are unchanged.
+  `PointSnap.searchRadius` (120 pt), else the model's point. A label is an element's
+  title or description, never its value (what a text field holds is typed content, so
+  it is never matched or logged). Containers (AXWindow, AXSheet, AXGroup, AXScrollArea,
+  AXSplitGroup, AXWebArea, AXToolbar, AXLayoutArea, AXApplication) and elements larger
+  than 400 x 300 pt are never candidates; among those holding the point the smallest
+  frame wins, then the best score. The Accessibility reads
+  share `PointSnap.budgetSeconds` (0.15 s). Early and final cursor dispatch both snap
+  (the timing marks `tag_parsed` before the snap; a stream that ends during the early
+  snap reuses its result); a click turn clicks where the cursor went. The primary
+  screen height is read on the main actor and passed in. Temperature and screenshot size are unchanged.
 - **Sketches** (`DrawingRouting` → `.screenSketch`, only with drawing on):
   `SketchIntent.parse` returns a `SketchRequest` (figure, `SketchAnchor`, `SketchSize`,
   board) for words that ask for a figure that marks nothing; it is tested before the
   mark patterns and returns nil when the words name a target ("around the error",
   "it"). draw, sketch and doodle also reach a freeform figure; put, place, make, show me,
-  give me, add and create reach a figure only when the object is in the `named` table.
+  give me, add and create reach a figure only when the whole object is a `named` figure
+  (the name, then at most a board word, a placement, a size or a tic tac toe move), so
+  "show me the star wars trailer" and "show me the box score" are not sketches.
   Tic tac toe moves ("x in the center", "an o top left") are read first, before the
   placement patterns strip their region words; "empty", "blank", "nothing in it" force an
   empty board, and only "game in progress" or "some moves" bring back

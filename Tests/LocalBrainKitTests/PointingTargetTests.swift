@@ -28,7 +28,18 @@ final class PointingTargetTests: XCTestCase {
         for words in ["point out chat window bar to me", "Point out the chat window bar to me", "point at the message box in the chat window",
                       "where is the input in the chat window", "point to the composer in the claude app", "where is the sidebar of the notes app",
                       "point to the search bar in this app", "where is the text field in this window", "point out the chat window bars",
-                      "point at the title bar of the chat window", "point at the menu bar of the notes app"] {
+                      "point at the menu bar of the notes app"] {
+            XCTAssertFalse(PointingTarget.namesWindow(words), words)
+        }
+    }
+
+    // "title bar" is a window cue, not a control noun: the window gets the window line and the window snap.
+    func testTheTitleBarNamesAWindowAndTheMenuBarStaysAControl() {
+        for words in ["point at the title bar of the chat window", "point at the title bar", "where is the titlebar of the notes app",
+                      "point to the title bar in the claude window"] {
+            XCTAssertTrue(PointingTarget.namesWindow(words), words)
+        }
+        for words in ["point at the menu bar", "point at the title bar button", "point at the search bar in the title bar of the chat window"] {
             XCTAssertFalse(PointingTarget.namesWindow(words), words)
         }
     }
