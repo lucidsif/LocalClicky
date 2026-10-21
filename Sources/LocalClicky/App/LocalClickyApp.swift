@@ -31,8 +31,13 @@ struct LocalClickyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
+    // TEMP debug logger (remove at project end)
+    private let pageProbeRunner = PageProbeRunner()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Line-buffer stdout so the 🧭 and 🔵 print lines reach ~/.clicky-gateway/app-stdout.log as they
+        // happen; redirected to a file, stdout is block-buffered and they only appeared at quit.
+        setvbuf(stdout, nil, _IOLBF, 0)
         guard relaunchInstalledCopyIfNeeded() == false else { return }
 
         print("🔵 LocalClicky: Starting...")
@@ -42,6 +47,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
+        // TEMP debug logger (remove at project end)
+        pageProbeRunner.start()
 
         // Auto-open the panel on launch only if setup is still needed
         // (a permission hasn't been granted). Otherwise stay out of the way —

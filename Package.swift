@@ -29,6 +29,16 @@ let package = Package(
             name: "LocalBrainKit",
             path: "Sources/LocalBrainKit"
         ),
+        // The action layer: reads a page through Accessibility and presses a
+        // link in the background. Behind the ActionBackend protocol, so the
+        // backend can be swapped in one place. Needs the Accessibility API
+        // (ApplicationServices), which the pure LocalBrainKit never touches.
+        .target(
+            name: "LocalClickyActions",
+            dependencies: ["LocalBrainKit"],
+            path: "Sources/LocalClickyActions",
+            linkerSettings: [.linkedFramework("ApplicationServices")]
+        ),
         // C interop shim exposing the sherpa-onnx C API (neural text-to-speech)
         // to Swift. The implementations live in the vendored dylib that the
         // LocalClicky target links against; this just provides the header/module.
@@ -48,7 +58,7 @@ let package = Package(
         // the code loads them via Bundle.main.
         .executableTarget(
             name: "LocalClicky",
-            dependencies: ["LocalBrainKit", "CSherpaOnnx"],
+            dependencies: ["LocalBrainKit", "LocalClickyActions", "CSherpaOnnx"],
             path: "Sources/LocalClicky",
             exclude: ["Resources"],
             linkerSettings: [

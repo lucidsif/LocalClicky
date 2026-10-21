@@ -13,16 +13,19 @@ speech‑to‑text (Apple Speech), reasoning (`llama3.2:3b`), screen *describe*
 neural **Piper** voice via the in‑process sherpa‑onnx runtime, with
 `AVSpeechSynthesizer` as fallback). Fully‑local traffic is HTTP to a local Ollama
 server on `127.0.0.1:11434`. There is **no telemetry, no auto‑updater, no account,
-no API keys**. The single, opt‑in exception to "no cloud" is the web tool
+no API keys**. The opt‑in exceptions to "no cloud" are the web tool
 (`WebReachTool`, route `.webReach`) — it only runs when the user explicitly asks to
-look something up online, and is clearly flagged ("checking the web…").
+look something up online, and is clearly flagged ("checking the web…"), and the play‑a‑video
+lookup (`YouTubeDirectSearch`), which is one GET of youtube's search page for the spoken query, the same
+request Chrome would make, ephemeral session, no cookies, sent only on a play request.
 
 ## Architecture
 
 - **Packaging**: a Swift Package (`Package.swift`), not an Xcode project. Builds
   with Command‑Line‑Tools `swift build`; `scripts/build-app.sh` wraps the binary
   into `LocalClicky.app`. Also opens directly in Xcode via `open Package.swift`.
-- **Targets**: `LocalBrainKit` (no‑UI brain), `CSherpaOnnx` (C shim for the neural
+- **Targets**: `LocalBrainKit` (no‑UI brain), `LocalClickyActions` (Accessibility
+  action layer), `CSherpaOnnx` (C shim for the neural
   TTS runtime), `LocalClicky` (menu‑bar app), `localbrain-harness` (headless
   verification CLI), `LocalBrainKitTests`.
 - **App type**: menu‑bar only (`LSUIElement=true`), not sandboxed (needs
@@ -94,9 +97,33 @@ look something up online, and is clearly flagged ("checking the web…").
   point onto the matching window's title bar (title or app name, else menu bar, containing,
   nearest within 60 pt) or the matching small Accessibility element (radius 120 pt, label overlap
   0.5, no containers, 150 ms budget). "Title bar" is a window cue, "menu bar" a control noun. Prompt text is never changed for any of this.
+- **Email drafts and Bear notes**: "draft an email to X in gmail saying ..." (`EmailDraftPlanner`, route `.draftEmail`) and
+  "write a note in bear: ..." (`BearNotePlanner`, route `.bearNote`) are checked first in `ConversationRouter.route`. A
+  draft run (`DraftRunDriver`, `DraftRunWorld`, the app's `DraftAgentRun`) writes the body with `DraftWriter` (Studio
+  model; Studio off falls back to the gist plus a short spoken notice), then opens a Gmail compose link or a Fastmail
+  mailto link in the background. It never sends; `SendGuard` also refuses "click send" turns. "Use the current draft" and
+  replies read Gmail's page (gated at run time: `beginWebContentAccess`, then 4 s to find the web area) and write the body
+  by AXValue; they press only message rows and the Reply button, never a link, through `AXBackend.press` and its SendGuard
+  backstop. Every guessed AX label lives in `LabelMap` (fix labels there only). A reply answers the newest message: a second writer call quotes the page text as delimited data (never logged).
+- **Computer use**: "go to youtube and play X" (`AgentTaskPlanner`, route `.playMedia`; "can you play X" and
+  "i want you to play X" count without the word youtube) is one fixed plan with no model. It reads the video
+  from youtube's search page first (`YouTubeSearchResults`), asks naming the title, and opens the watch page
+  only after the yes; the Accessibility page path is the fallback, and a direct open whose page cannot be
+  read ends `opened`, not `playing`. `MediaRunDriver` drives `MediaRunMachine` through a
+  `MediaRunWorld` (the app's is `MediaAgentRun`). Chrome only; presses with `AXPress` through
+  `ActionBackends.current()` (`AXBackend`) so the real cursor never moves. Chrome's page is made readable once per run, before the open (`AXBackend.beginWebContentAccess`), with `AXManualAccessibility`, else (Chrome 155 says unsupported, or two other failures) `AXEnhancedUserInterface` for that run only, restored at the end (`WebContentAccess`). One consent yes per
+  run before the press (silence for 20 s is no); background by default (Chrome opens without
+  activating, no app is activated, no interlock), and only "in the foreground" makes any user key
+  or a 12 pt mouse move stop it (agent keys carry `InputInterlock.agentEventTag`). Page text goes to the card, never the
+  voice (`AgentNarration`). Caps in `AgentCaps` (a cold Chrome launch gets `pageLoadColdSeconds`). Details and plan deviations:
+  `docs/ARCHITECTURE.md`, "Computer use: play a video".
 - **TEMP debug log**: `TempAppDebugLog` (flag `~/.clicky-gateway/debug.on`, file
-  `debug-app-turns.jsonl`) logs sketch, clear and pointing turns; remove at project end
-  (README, "Temporary app debug log").
+  `debug-app-turns.jsonl`) logs sketch, clear and pointing turns, plus the agent events
+  `agent`, `agent-links`, `agent-buttons` (the last two are page text), `agent-open` (on a page-load timeout), `agent-direct` (the search-page lookup) and `agent-end` (final state, `axMode`, `restored`, `lastPageURL`, `firstWebAreaMs`, `restoreAXError`, `readBackAfterRestore`); also `agent-ax` (one per attribute set) and `agent-walk` (tree look,
+  10 s, 20 a run); remove at project end (README, "Temporary app debug log").
+- **TEMP page probe**: while `debug.on` exists, write `chrome`, `fastmail`, `mailto` or `compose` into
+  `~/.clicky-gateway/probe.request`; within 2 s `PageProbeRunner` runs it and writes `probe-result.json` (and
+  `probe-compose-tree.jsonl` for `compose`). It never presses, focuses or posts events. Details: `docs/ARCHITECTURE.md`.
 
 See `docs/ARCHITECTURE.md` for the full pipeline.
 
@@ -112,8 +139,11 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 | `Sources/LocalBrainKit/PointingFollowUp.swift`, `PointSnap.swift` | Pure and unit-tested: the follow-up object of a pointing turn, and the snap decisions (title bar of a window, label match of a control) in Core Graphics points. The window and Accessibility reads are `Sources/LocalClicky/Capture/PointSnapper.swift`. |
 | `Sources/LocalBrainKit/InkTurnPolicy.swift`, `PointingTarget.swift`, `Sketch.swift` | Pure and unit‑tested: naming vs explain for an ink turn (`InkQuestion`), whether a pointing request names a window, and the sketch turn (`SketchIntent`, `ClearMarksIntent`, `SketchTemplate`, `SketchLimits`, `SketchTiming`). The prompts `inkExplain`, `windowTargetLine` and `screenSketchResponse` are pinned by sha256 in the tests; clicky-eval pins the same strings. |
 | `Sources/LocalBrainKit/PointThenDraw.swift` | Circle and arrow requests are drawn by the app from the grounding model's `[POINT]` (point route prompt), not from a model-written SHAPE tag: ring radius from the Accessibility frame under the point (at most 300 x 120 pt) else a named default, arrow tail toward the side with more room. Line, curve, polygon and highlight keep the shape-tag route, and `defaults write … drawCircleArrowWithModelShapeTags -bool YES` sends circle and arrow back to it for the eval. Placeholder radius and arrow length are set from DEV. The model's copy of the ink has a 3 px core floor (`InkTurn.minimumCoreWidthInImagePixels`) and its close-up is cut from the clean capture. |
+| `Sources/LocalBrainKit/AgentTaskPlanner.swift`, `AgentRun.swift`, `MediaRun{Machine,Driver}.swift`, `MediaResultPicker.swift`, `MediaPlaybackCheck.swift`, `AgentNarration.swift`, `ConsentAnswer.swift`, `InputInterlock.swift`, `WebPageReading.swift`, `AttemptGate.swift`, `WebContentAccess.swift`, `YouTubeSearchResults.swift`, `EmailDraftPlanner.swift`, `ComposeTarget.swift`, `SpelledAddress.swift`, `StrictURLEncoder.swift`, `DraftWriter.swift`, `DraftPrompts.swift`, `DraftRun.swift`, `LabelMap.swift`, `BearNotePlanner.swift`, `SendGuard.swift` | Computer use (and email drafts, Bear notes, the send guard), pure and unit‑tested: trigger, caps and step record, the state machine and its driver (`MediaRunWorld` is the seam), result picker, playback checks, fixed narration, spoken yes/no, takeover rules, page-reading decisions. |
+| `Sources/LocalClickyActions/{ActionBackend,AccessibilityActions}.swift` | `ActionBackend` protocol, `ActionBackends.current()`, and `AXBackend` (read a Chrome page's links and buttons, `AXPress` in the background). |
+| `Sources/LocalClicky/Agent/*` | `MediaAgentRun` (the app's `MediaRunWorld`: Chrome, consent, interlocks), `DraftAgentRun` and `DraftRunPanel` (the app's `DraftRunWorld` and its card), `YouTubeDirectSearch` (the search-page fetch), `AgentRunPanel` (step card, consent question), `GhostPointerWindow` (faint click‑through arrow). |
 | `Sources/LocalBrainKit/SpokenTextSegmenter.swift` | Splits a streaming answer into speakable sentences (skips the `[POINT]` tag). |
-| `Sources/LocalBrainKit/BrowserCommandPlanner.swift` | Maps a spoken command → concrete browser URLs (known‑site table, Gmail compose). |
+| `Sources/LocalBrainKit/BrowserCommandPlanner.swift`, `CustomSites.swift` | Maps a spoken command → concrete browser URLs (known‑site table, Gmail compose, plus the user's own `ModelPreferences.customSites` name → address table, empty by default, tried first). |
 | `Sources/LocalBrainKit/AppCommandPlanner.swift` | Pure NL → app‑name extraction + deterministic install‑name matching (used by the launcher and unit‑tested). |
 | `Sources/LocalBrainKit/LocalModels.swift` | Default model names (text/vision/grounding), `ModelRole`, per‑role context windows, `isLikelyGroundingCapable`, Ollama endpoint. |
 | `Sources/LocalBrainKit/HardwareAdvisor.swift` | RAM/CPU detection + curated model catalog + per‑machine recommendation + resident‑set decision. Pure, unit‑tested. |
@@ -141,7 +171,7 @@ See `docs/ARCHITECTURE.md` for the full pipeline.
 ```bash
 scripts/bootstrap-ollama.sh        # ensure Ollama + models
 scripts/fetch-tts.sh               # vendor the neural TTS runtime + Piper voice (once)
-swift build                        # compile everything (CLT, no Xcode)
+swift build                        # compile everything
 swift run localbrain-harness --selftest          # 230 checks: parser + router + advisor + prompts + safety
 swift run localbrain-harness --advise            # hardware profile + recommended models (+ autotune if present)
 swift run localbrain-harness --models            # installed Ollama models + which role each can fill
@@ -151,15 +181,16 @@ swift run localbrain-harness --benchmark-suite shot.png 3 after # before/after r
 scripts/build-app.sh && scripts/package-dmg.sh   # produce .app + DMG
 ```
 
-Do **not** run `swift test` on a Command‑Line‑Tools‑only machine — XCTest ships
-with full Xcode. Use `localbrain-harness --selftest` instead, or run the tests in
-Xcode.
+Xcode is installed on the dev machine, so `swift test` runs the unit tests (569+). On a
+Command‑Line‑Tools‑only machine do **not** run it: XCTest ships with full Xcode; use
+`localbrain-harness --selftest` instead, or run the tests in Xcode.
 
 ## Conventions
 
 - Clear, specific, longer names over clever/short ones. Comments explain "why".
 - All UI state on `@MainActor`; async/await throughout.
-- **No cloud.** Do not add any network call to a non‑localhost host, any
+- **No cloud.** Do not add any network call to a non‑localhost host (the web tool and the YouTube search
+  lookup above are the only exceptions), any
   telemetry/analytics, or any API key. If a feature seems to need the cloud, find
   the local equivalent (Ollama model, Apple framework, vendored model) instead. The
   neural voice runs fully on‑device: the sherpa‑onnx runtime + Piper voice are

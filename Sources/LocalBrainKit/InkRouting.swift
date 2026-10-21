@@ -18,6 +18,8 @@ public enum InkRouting {
                              hasUsableInk: Bool) -> ConversationRoute {
         let base = ConversationRouter.route(transcript: transcript, context: context)
         guard hasUsableInk, context.visionModeSelected, context.screenAvailable else { return base }
+        // Never a click on Send, ink or not.
+        if base == .refuseSend { return base }
 
         let text = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if ConversationRouter.wantsClick(text) { return .screenClick }

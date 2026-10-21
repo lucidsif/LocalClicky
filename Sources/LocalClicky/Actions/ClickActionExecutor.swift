@@ -14,6 +14,7 @@
 
 import AppKit
 import CoreGraphics
+import LocalBrainKit
 
 enum ClickActionExecutor {
 
@@ -23,6 +24,8 @@ enum ClickActionExecutor {
     /// cursor there first so the click lands where the user can see it.
     static func click(atCGGlobalPoint cgGlobalPoint: CGPoint) {
         let source = CGEventSource(stateID: .combinedSessionState)
+        // Tagged so an agent run does not take its own click for the user taking over.
+        source?.userData = InputInterlock.agentEventTag
 
         // Move the hardware cursor to the target so the click is unambiguous.
         CGWarpMouseCursorPosition(cgGlobalPoint)

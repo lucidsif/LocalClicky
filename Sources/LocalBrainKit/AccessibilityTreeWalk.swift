@@ -87,6 +87,41 @@ public enum AccessibilityTreeWalk {
         }
         return Result(nodes: kept, visited: visited, stoppedEarly: stoppedEarly)
     }
+
+    /// Breadth-first walk from `roots` that hands every node to `visit` and
+    /// leaves the keeping to the caller. Same budget rules as `collect`: at
+    /// most `maxNodes` nodes are visited, `shouldStop` is checked before each,
+    /// and children are only asked for while budget remains. A node's children
+    /// are asked for right after `visit` returns for that node, so a caller may
+    /// use `visit` to decide not to descend. `visit` returning true stops the
+    /// walk at once.
+    public static func breadthFirst<Node>(roots: [Node],
+                                          maxNodes: Int,
+                                          maxDepth: Int,
+                                          children: (Node) -> [Node],
+                                          shouldStop: () -> Bool,
+                                          visit: (Node, _ depth: Int) -> Bool) -> (visited: Int, stoppedEarly: Bool) {
+        var queue: [(node: Node, depth: Int)] = Array(roots.prefix(max(0, maxNodes))).map { ($0, 0) }
+        var head = 0
+        var visited = 0
+        var stoppedEarly = roots.count > max(0, maxNodes)
+
+        while head < queue.count {
+            if visited >= maxNodes || shouldStop() { stoppedEarly = true; break }
+            let (node, depth) = queue[head]
+            head += 1
+            visited += 1
+            if visit(node, depth) { return (visited, true) }
+            guard depth < maxDepth else { continue }
+
+            let room = maxNodes - visited - (queue.count - head)
+            guard room > 0 else { continue }
+            let below = children(node)
+            if below.count > room { stoppedEarly = true }
+            queue.append(contentsOf: below.prefix(room).map { ($0, depth + 1) })
+        }
+        return (visited, stoppedEarly)
+    }
 }
 
 public enum AccessibilityLinkResolver {

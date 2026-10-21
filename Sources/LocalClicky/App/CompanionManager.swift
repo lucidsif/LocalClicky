@@ -154,6 +154,12 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+    /// The play-a-video run in progress, if any. It has its own task: a key press cancels
+    /// `currentResponseTask`, and that must not end a run.
+    private var mediaAgentRun: MediaAgentRun?
+    private var draftAgentRun: DraftAgentRun?
+    /// A draft request that named no service, kept for the next turn's "gmail" or "fastmail".
+    private var pendingDraftRequest: EmailDraftRequest?
     private var currentResponseIdentifier: UUID?
 
     /// Stage timing for the turn in progress, from key down to the cursor
@@ -998,6 +1004,11 @@ final class CompanionManager: ObservableObject {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }
 
+            // A press during a run is the user taking over, except while it asks: then the press
+            // starts the spoken answer (the run ignores the interrupt in that state).
+            mediaAgentRun?.interrupt(.pushToTalk)
+            draftAgentRun?.interrupt()
+
             transientHideTask?.cancel()
             transientHideTask = nil
 
@@ -1188,6 +1199,33 @@ final class CompanionManager: ObservableObject {
     /// model, plays the spoken answer via on-device TTS, and — if the model
     /// returned a [POINT:x,y] tag — flies the blue cursor to that element.
     private func sendTranscriptToLocalModel(transcript: String) {
+        // While a run waits for its yes, whatever was said is the answer, not a new turn.
+        if let run = mediaAgentRun, run.isAsking {
+            run.answer(ConsentAnswer.parse(transcript) ?? .no)
+            discardPressCapture()
+            if let timer = turnTimer { finishTurnTimer(timer, outcome: "consent") }
+            settleAfterAction()
+            return
+        }
+        // The answer to "gmail or fastmail?": a turn that is only a service name finishes the draft.
+        if let pending = pendingDraftRequest {
+            pendingDraftRequest = nil
+            if let service = EmailDraftPlanner.serviceAnswer(from: transcript) {
+                discardPressCapture()
+                if let timer = turnTimer { finishTurnTimer(timer, outcome: "draft") }
+                startDraftRun(pending.withService(service), transcript: transcript)
+                settleAfterAction()
+                return
+            }
+        }
+        // The same for the draft run's "add to the open draft?" question.
+        if let run = draftAgentRun, run.isAsking {
+            run.answer(ConsentAnswer.parse(transcript) ?? .no)
+            discardPressCapture()
+            if let timer = turnTimer { finishTurnTimer(timer, outcome: "consent") }
+            settleAfterAction()
+            return
+        }
         currentResponseTask?.cancel()
         currentResponseTask = nil
         currentResponseIdentifier = nil
@@ -1231,7 +1269,8 @@ final class CompanionManager: ObservableObject {
                         screenAvailable: hasScreenRecordingPermission,
                         previousTurnUsedScreen: previousTurnUsedScreen,
                         hasConversationHistory: !conversationHistory.isEmpty,
-                        previousTurnWasPointing: previousTurnWasPointing
+                        previousTurnWasPointing: previousTurnWasPointing,
+                        customSites: ModelPreferences.customSites
                     ),
                     hasUsableInk: inkPackage != nil,
                     drawingEnabled: drawingEnabled
@@ -1277,6 +1316,26 @@ final class CompanionManager: ObservableObject {
                 }
                 if route == .spotify {
                     await handleSpotifyCommand(transcript: transcript)
+                    settleAfterAction()
+                    return
+                }
+                if route == .playMedia {
+                    await handlePlayMedia(transcript: transcript)
+                    settleAfterAction()
+                    return
+                }
+                if route == .draftEmail {
+                    await handleDraftEmail(transcript: transcript)
+                    settleAfterAction()
+                    return
+                }
+                if route == .bearNote {
+                    await handleBearNote(transcript: transcript)
+                    settleAfterAction()
+                    return
+                }
+                if route == .refuseSend {
+                    await speakReply(SendGuard.refusalLine, for: transcript)
                     settleAfterAction()
                     return
                 }
@@ -1742,7 +1801,7 @@ final class CompanionManager: ObservableObject {
     /// action is plain navigation (reversible, nothing destructive), so it runs
     /// without a confirmation prompt — the executor can't do anything riskier.
     private func handleBrowserCommand(transcript: String) async {
-        let plan = BrowserCommandPlanner.plan(for: transcript)
+        let plan = BrowserCommandPlanner.plan(for: transcript, customSites: ModelPreferences.customSites)
         if plan.isUnderstood {
             let opened = BrowserActionExecutor.execute(plan)
             print("🌐 Browser: opened \(opened)/\(plan.actions.count) — \(plan.actions.map { $0.label }.joined(separator: ", "))")
@@ -1854,7 +1913,7 @@ final class CompanionManager: ObservableObject {
         } else {
             // No installed app matched — try the same words as a web destination
             // before giving up, so we still do something useful when we can.
-            let browserPlan = BrowserCommandPlanner.plan(for: transcript)
+            let browserPlan = BrowserCommandPlanner.plan(for: transcript, customSites: ModelPreferences.customSites)
             if browserPlan.isUnderstood {
                 BrowserActionExecutor.execute(browserPlan)
                 summary = browserPlan.spokenSummary
@@ -2036,6 +2095,103 @@ final class CompanionManager: ObservableObject {
         voiceState = .responding
         do { try await speechSynthesizer.speakText(message) }
         catch { print("⚠️ TTS error during timer: \(error)") }
+    }
+
+    /// Starts a "go to youtube and play X" run and returns at once: the run lives on its own task
+    /// and adds its own history entry when it ends.
+    private func handlePlayMedia(transcript: String) async {
+        previousTurnUsedScreen = false
+        guard let intent = AgentTaskPlanner.mediaIntent(from: transcript) else { return }
+        switch intent {
+        case .needsQuery:
+            let message = AgentNarration.needsQueryLine
+            conversationHistory.append((userTranscript: transcript, assistantResponse: message))
+            if conversationHistory.count > 10 { conversationHistory.removeFirst(conversationHistory.count - 10) }
+            voiceState = .responding
+            do { try await speechSynthesizer.speakText(message) }
+            catch { print("⚠️ TTS error during play-media: \(error)") }
+        case .play(let request):
+            mediaAgentRun?.interrupt(.pushToTalk)
+            mediaAgentRun?.dismiss()
+            let run = MediaAgentRun(
+                request: request,
+                keyDowns: globalPushToTalkShortcutMonitor.keyDownPublisher.eraseToAnyPublisher(),
+                speak: { [weak self] line in
+                    do { try await self?.speechSynthesizer.speakText(line) }
+                    catch { print("⚠️ TTS error during play-media run: \(error)") }
+                })
+            mediaAgentRun = run
+            run.start { [weak self] finalState in
+                guard let self else { return }
+                let line = AgentNarration.line(for: finalState, query: request.query)
+                self.conversationHistory.append((userTranscript: transcript, assistantResponse: line))
+                if self.conversationHistory.count > 10 {
+                    self.conversationHistory.removeFirst(self.conversationHistory.count - 10)
+                }
+                self.lastSpokenAnswer = line
+            }
+        }
+    }
+
+    /// Speaks one fixed reply and records the turn.
+    private func speakReply(_ message: String, for transcript: String) async {
+        previousTurnUsedScreen = false
+        conversationHistory.append((userTranscript: transcript, assistantResponse: message))
+        if conversationHistory.count > 10 { conversationHistory.removeFirst(conversationHistory.count - 10) }
+        lastSpokenAnswer = message
+        voiceState = .responding
+        do { try await speechSynthesizer.speakText(message) }
+        catch { print("⚠️ TTS error during reply: \(error)") }
+    }
+
+    /// "draft an email to X in gmail ...": opens a draft in the background, never sends. With no service
+    /// named it asks which and keeps the request for the next turn.
+    private func handleDraftEmail(transcript: String) async {
+        previousTurnUsedScreen = false
+        guard let request = EmailDraftPlanner.request(from: transcript) else { return }
+        guard request.service != nil else {
+            pendingDraftRequest = request
+            await speakReply(DraftNarration.line(for: .handoff(.needsService)), for: transcript)
+            return
+        }
+        startDraftRun(request, transcript: transcript)
+    }
+
+    private func startDraftRun(_ request: EmailDraftRequest, transcript: String) {
+        previousTurnUsedScreen = false
+        draftAgentRun?.interrupt()
+        draftAgentRun?.dismiss()
+        let ctx = contextWindow(forModel: ModelPreferences.draftModel)
+        let run = DraftAgentRun(
+            request: request, client: ollamaClient, model: ModelPreferences.draftModel,
+            keepAlive: hardwareRecommendation.keepAlive, contextWindow: ctx,
+            speak: { [weak self] line in
+                do { try await self?.speechSynthesizer.speakText(line) }
+                catch { print("⚠️ TTS error during draft run: \(error)") }
+            })
+        draftAgentRun = run
+        run.start { [weak self] finalState in
+            guard let self else { return }
+            let line = DraftNarration.line(for: finalState)
+            self.conversationHistory.append((userTranscript: transcript, assistantResponse: line))
+            if self.conversationHistory.count > 10 { self.conversationHistory.removeFirst(self.conversationHistory.count - 10) }
+            self.lastSpokenAnswer = line
+        }
+    }
+
+    /// "write a note in bear: ...": opens Bear's own link in the background and says so.
+    private func handleBearNote(transcript: String) async {
+        guard let request = BearNotePlanner.request(from: transcript) else { return }
+        if request.text.isEmpty {
+            await speakReply(BearNotePlanner.askTextLine, for: transcript)
+            return
+        }
+        let opened = await BrowserActionExecutor.openInApp(
+            url: BearNotePlanner.url(for: request), bundleIdentifier: BearNotePlanner.bundleIdentifier, activates: false)
+        let message = opened ? BearNotePlanner.addedLine : BearNotePlanner.failedLine
+        TempAppDebugLog.append("bear", ["mode": String(describing: request.mode), "titled": request.title != nil,
+                                        "textChars": request.text.count, "opened": opened])
+        await speakReply(message, for: transcript)
     }
 
     /// Controls the Spotify desktop app for an explicit "… on spotify" command.

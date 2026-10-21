@@ -11,7 +11,9 @@
 //  existence check per call.
 //
 //  It never records an image or screen content: the transcript, the figure, the point and the label the model
-//  gave, and the label of the element or title of the window the snap matched. Every call site carries the
+//  gave, and the label of the element or title of the window the snap matched. It also logs agent runs (one
+//  line per step, plus the page's first links and its button labels, which are page text), in the same local
+//  file and nowhere else. Every call site carries the
 //  comment "TEMP debug logger (remove at project end)"; remove the call sites, then this file. README, section
 //  "Temporary app debug log", says how.
 //

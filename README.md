@@ -15,7 +15,7 @@ ElevenLabs) through a Cloudflare Worker.
 **LocalClicky does all of it on your Mac. No cloud, no API keys, no account, no
 analytics. Nothing you say, see, or ask ever leaves the machine.** The only
 network traffic is HTTP to a local [Ollama](https://ollama.com) server on
-`127.0.0.1`.
+`127.0.0.1`, plus the named exceptions under "Is it safe?" below.
 
 ---
 
@@ -49,6 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/tanavc1/LocalClicky/main/scripts/we
 | Hardware tuning | — | **autotune-style advisor picks the best models + keeps them warm** |
 | Pick / download models | — | **any model in your Ollama; one-click in-app downloads (fit-gated)** |
 | Open apps / browser / clipboard | — | **deterministic, on-device actions** |
+| Play a video on YouTube | none | **looks the video up, asks with its title, opens it after your yes, no model involved** |
 | Internet (opt-in) | — | **on request only** — *"what's the latest… online"* (the one cloud exception) |
 | Analytics / telemetry | PostHog (full transcript!) | **none** |
 | Auto-updater | Sparkle (cloud appcast) | **none** |
@@ -123,8 +124,10 @@ scripts/release.sh            # build + DMG + publish the GitHub Release (mainta
   vision, and actions are all on-device.
 - **No cloud, no telemetry, no account, no API keys.** The *only* outbound traffic
   is: (1) localhost to your own Ollama, (2) one-time setup downloads you trigger
-  (Ollama itself + models, from `ollama.com`), and (3) the **opt-in** web lookup,
-  which only runs when you explicitly ask it to (and says *"checking the web…"*).
+  (Ollama itself + models, from `ollama.com`), (3) the **opt-in** web lookup,
+  which only runs when you explicitly ask it to (and says *"checking the web…"*), and (4) when you
+  ask it to play something on YouTube, one search request to youtube.com for the words you said (no
+  cookies, no account, nothing else sent).
   A `grep` for trackers/keys comes back empty — there's nothing to find.
 - **No app can quietly watch you.** The screen is captured *only* while you hold
   the hotkey, and the image goes straight to your local model and nowhere else.
@@ -219,10 +222,37 @@ spoken sentence), clear turns (transcript, cleared yes or no) and pointing turns
 (transcript, the object substituted for a follow-up, window line yes or no, the model's
 point in screenshot pixels, its label, snap kind window, ax or none, the snapped point
 in screen points, the matched element title or description, or window title; never a text field's value). It never logs an image
-or screen content beyond that label. To remove it: delete the calls marked
+or screen content beyond that label. The exception is computer use, which adds more events:
+`agent` (one line per step of a run: step, effect, your consent answer and its timing, outcome;
+no page text), `agent-links` (the first 40 links of the YouTube results page, each label cut to
+120 characters, with its address, once per run) and `agent-buttons` (the button labels of the
+page being checked, once per run). The last two are page text. A page-load timeout adds `agent-open`
+(Accessibility trusted, Chrome running before and after, pid, last page address, last
+AXManualAccessibility result, which attribute made the page readable (`axMode`: manual, enhanced or none),
+seconds waited, foreground; no page text). `draft` (one per email draft run: service, kind, recipient kind, whether an address parsed, gist and body lengths, writer model or fallback and its milliseconds, the fallback reason, whether the link opened, final state, `pageReadable`, `gateMs`, `replyContextChars` (the length of the message replied to, never its text), `bodiesFound`, `bodyMode`, `replyWriter` (model, fallback or skipped); no address, no message text and no page text), `draft-end` (how the app's accessibility switch was put back) and `bear` (mode, titled or not, text length, opened). `agent-direct` (the YouTube search-page lookup: milliseconds, result count, chosen video id and
+title, whether it fell back, the error; the title is page text), `agent-end` (once, at the final state: the state, `axMode`, and `restored`,
+whether AXEnhancedUserInterface was put back, plus `lastPageURL`, `firstWebAreaMs`, `restoreAXError` and `readBackAfterRestore`).
+`agent-ax` (one line per attribute set made to make a page readable: attribute, AXError, uptime, timeout, value read back,
+VoiceOver, app bundle id and version, whether the app lists the attribute, whether it is settable) and `agent-walk` (a look at the
+front window's tree, at most twice a second for 10 s, 20 a run: nodes visited, depth, why the walk stopped, the web area's
+address and child count, whether the window is on screen, the address bar's value; page text). Stdout is line-buffered, so the
+app's 🧭 lines reach `~/.clicky-gateway/app-stdout.log` as they happen.
+
+**Page probe (TEMP).** While the flag file exists you can run a probe without voice: write one word into
+`~/.clicky-gateway/probe.request` (`echo chrome > ~/.clicky-gateway/probe.request`). Within 2 seconds the app reads the
+word, deletes the file, runs the probe and writes `~/.clicky-gateway/probe-result.json`
+(`word`, `ts`, `axMode`, `codes`, `webAreaFound`, `webAreaChildCount`, `firstWebAreaMs`, `omnibox`, `notes`):
+`chrome` makes Chrome readable and walks its front window for 10 s (no page is opened, the switch is put back);
+`fastmail` does the same for Fastmail.app; `mailto` opens a safe mailto in Fastmail.app without activating it and logs
+the frontmost app and Fastmail's window titles before and 2 s after (`probe-mailto`); `compose` finds Gmail's
+"Message Body" in Chrome's front window and, if it is settable and empty, writes a marker, reads it back and looks 3 s
+later for Gmail's "Saved" text (`probe-compose`), and writes the compose region's roles, descriptions and titles
+(never values) to `~/.clicky-gateway/probe-compose-tree.jsonl`. A probe never presses a button, focuses or raises a
+window, posts a key or mouse event, or sends mail. To remove it: delete the calls marked
 `// TEMP debug logger (remove at project end)` in
-`Sources/LocalClicky/App/CompanionManager.swift`, then delete
-`Sources/LocalClicky/System/TempAppDebugLog.swift` and this section.
+`Sources/LocalClicky/App/CompanionManager.swift`, `Sources/LocalClicky/Agent/MediaAgentRun.swift` and
+`Sources/LocalClicky/App/LocalClickyApp.swift`, then delete
+`Sources/LocalClicky/System/TempAppDebugLog.swift`, `Sources/LocalClicky/Agent/PageProbeRunner.swift` and this section.
 
 ## Actions (what it can *do*)
 
@@ -237,12 +267,56 @@ submit a form, send a message, delete, or buy anything.
 | "open a new tab and go to gmail" | opens the URL(s) in your default browser |
 | "search for swift concurrency" | opens a web search |
 | "search youtube for lofi", "coffee shops on google maps" | opens a scoped site search |
+| "open my dashboard" (or any name you add as a custom site, see below) | opens the address you mapped to that name |
 | "open gmail and start a draft" | opens a fresh Gmail compose window |
+| "draft an email to bob@example.com in gmail saying i will get back to him", "draft a reply to bob in my gmail" | writes the body (the Studio model, `studio:clicky`; with the Studio off, your own words become the body and it says so), then opens the draft in Gmail (Chrome, `/mail/u/0/`) or Fastmail (a mailto link) without bringing the app forward. It never sends: it ends "it is not sent. press send yourself." A spoken address ("bob at example dot com") fills To; a name alone leaves To empty and says so. With no service named it asks "gmail or fastmail?" and takes your next word as the answer. "Use the current draft" fills the compose body already open in Chrome (after a yes on the card when it already has text), and "draft a reply to bob in my gmail" searches Gmail for bob, opens the message, presses Reply and fills the body, written to answer the message (the page text is quoted to the model as data). Both read the page, only after a 4 second check that Gmail's page can be read; when it cannot, you get a new draft and the spoken reason. No message from bob found: it says so and opens nothing. Fastmail replies are not done yet. |
+| "write a note in bear: buy milk", "add buy flowers to my groceries note in bear" | creates or appends to a Bear note through Bear's own link, in the background, tagged `clicky`; says "added the note to bear." |
+| "click send", "press the send button" | refused out loud, never clicked |
 | "launch spotify", "open the notes app", "open terminal" | opens an installed Mac app |
 | "copy your answer", "copy that to my clipboard" | copies the last spoken answer to the clipboard |
 
+**Custom sites.** You can give a site your own spoken name, for example a dashboard on this Mac. It is a setting, empty by default, and nothing personal is built in. The name is what you say, the value is an http or https address; anything else is ignored. A speech-to-text spelling of a name is just another entry. Names are matched longest first, before the built-in sites.
+
+```
+defaults write com.localclicky.LocalClicky localClicky.customSites -dict "my dashboard" "http://127.0.0.1:9999/" "my dash board" "http://127.0.0.1:9999/"
+```
+
+Then "open my dashboard" opens that address. Use `defaults delete com.localclicky.LocalClicky localClicky.customSites` to clear it.
+
 Browser navigation and app launching are exactly as safe as typing a URL or
 double-clicking an app in Finder.
+
+## Computer use (play a video)
+
+Say *"go to youtube and play lucid dreams"* (or *"play lucid dreams on youtube"*) and
+LocalClicky does it for you, in Google Chrome. It works in the background by default: Chrome
+opens behind your current app and you can keep working. Add **"in the foreground"** (or *"bring it
+up"*, *"so I can see it"*) to bring Chrome to the front and watch it happen.
+
+1. It looks up your words on YouTube's search page (a plain request, the one the browser would
+   make; nothing is opened yet) and picks the best match.
+2. A card appears and asks *"Play this on youtube.com?"*, and it says the title of the video it
+   picked out loud. Say **yes** or press **Return**. It asks every time.
+3. Only then does Chrome open that video (in the background). If Chrome's page can be read, it
+   checks that the video is playing, and presses Play once if the page opened but the video did
+   not start. If the page cannot be read, it says it opened the video and that it cannot tell
+   whether it started. If the lookup fails, it falls back to opening the results page in Chrome and
+   pressing the first result (a faint arrow shows where). The card lists each step in words.
+
+To stop it at any point, press a talk key or the card's **Stop** button; in the foreground
+you can also move the mouse or press any key. Say **no** or press **Escape** to decline; no
+answer for 20 seconds counts as no. The card takes the keyboard only while it asks, and never
+brings LocalClicky to the front. It also stops by itself after 45 seconds, or if the page leaves youtube.com. With VoiceOver on,
+each step is announced to VoiceOver instead of spoken.
+
+What it never does: no model reads the page (the plan is fixed and the result is chosen by
+rules), nothing leaves your Mac except that one search request (only the words you said, no cookies, no account,
+no screen or voice data), it never types into or reads a password field, and the page's
+text is never read out loud, except the title of the video it asks about. It presses one video link and, if needed, one Play button, and
+nothing else.
+
+It needs **Google Chrome** and the **Accessibility** permission (the same one the hotkey uses).
+How it works: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), "Computer use: play a video".
 
 ## Internet (the one opt-in online feature)
 
@@ -331,6 +405,8 @@ push-to-talk (⌃⌥, CGEvent tap)
   router, the browser/app command planners, prompts, the `HardwareAdvisor` +
   `AutotuneBridge` (model recommendation), and `WebReachTool` (the opt-in web
   lookup). Unit-tested and exercisable headless.
+- **`Sources/LocalClickyActions/`**: the action layer for computer use: reads a Chrome page
+  through Accessibility and presses a link or button in the background.
 - **`Sources/LocalClicky/`** — the menu-bar app (SwiftUI/AppKit): blue cursor
   overlay, push-to-talk pipeline, panel UI, screen capture, neural TTS, the app
   launcher, and `CompanionManager` (the state machine that wires it all together).

@@ -79,7 +79,9 @@ public enum BrowserCommandPlanner {
         ("google", "https://www.google.com/", "google"),
     ]
 
-    public static func plan(for transcript: String) -> BrowserPlan {
+    /// `customSites` is the user's own spoken name -> address table (CustomSites); it is tried before the built-in
+    /// sites. Empty by default.
+    public static func plan(for transcript: String, customSites: [String: String] = [:]) -> BrowserPlan {
         let text = transcript.lowercased()
 
         // 1) Compose / draft an email → Gmail compose (a fresh draft, ready to type).
@@ -124,7 +126,8 @@ public enum BrowserCommandPlanner {
         // 4) Known sites (consume each match so generic terms don't double-fire).
         if actions.isEmpty {
             var working = " \(text) "
-            for site in siteMap where working.contains(site.keyword) {
+            let sites = CustomSites.entries(from: customSites).map { (keyword: $0.keyword, url: $0.url, label: $0.keyword) } + siteMap
+            for site in sites where working.contains(site.keyword) {
                 actions.append(BrowserAction(url: site.url, label: site.label))
                 labels.append("opening \(site.label)")
                 working = working.replacingOccurrences(of: site.keyword, with: " ")
@@ -310,8 +313,15 @@ public enum BrowserCommandPlanner {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
+        // "open up, my gmail in the browser": what is left of the verb phrase is filler, not a search.
+        let words = query.lowercased().split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
+        if words.allSatisfy({ queryFiller.contains($0) }) { return nil }
         return query.isEmpty ? nil : query
     }
+
+    private static let queryFiller: Set<String> = [
+        "up", "my", "the", "a", "an", "in", "on", "browser", "chrome", "please", "for", "me", "now", "tab", "new",
+    ]
 
     static func encodedQuery(_ query: String) -> String {
         query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query

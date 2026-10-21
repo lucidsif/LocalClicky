@@ -69,6 +69,16 @@ public enum ConversationRoute: Equatable, Sendable {
     /// Control the Spotify desktop app ("play despacito on spotify", "pause
     /// spotify", "next song on spotify"). Handled via the Spotify scripting bridge.
     case spotify
+    /// Play a video on YouTube by reading the page ("go to youtube and play lucid
+    /// dreams"). Handled by the agent run (MediaRunMachine), with a consent card.
+    case playMedia
+    /// Open an unsent email draft in Gmail or Fastmail from a spoken request ("open a gmail draft and tell
+    /// bob i will get back to him"). Handled by the draft run (DraftRunDriver); it never sends.
+    case draftEmail
+    /// Write into Bear by its URL scheme ("write a note in bear: ..."). Handled by BearNotePlanner.
+    case bearNote
+    /// "click send" and the like: answered with SendGuard.refusalLine, never a screen click.
+    case refuseSend
 }
 
 public enum ConversationRouter {
@@ -89,17 +99,21 @@ public enum ConversationRouter {
         /// follow-up ("again", "that one", "show me again") be a pointing turn
         /// (PointingFollowUp); without it those words are not about the screen.
         public let previousTurnWasPointing: Bool
+        /// The user's own spoken site names (CustomSites); a name in the words makes "open <name>" a browser open.
+        public let customSites: [String: String]
 
         public init(visionModeSelected: Bool,
                     screenAvailable: Bool,
                     previousTurnUsedScreen: Bool,
                     hasConversationHistory: Bool,
-                    previousTurnWasPointing: Bool = false) {
+                    previousTurnWasPointing: Bool = false,
+                    customSites: [String: String] = [:]) {
             self.visionModeSelected = visionModeSelected
             self.screenAvailable = screenAvailable
             self.previousTurnUsedScreen = previousTurnUsedScreen
             self.hasConversationHistory = hasConversationHistory
             self.previousTurnWasPointing = previousTurnWasPointing
+            self.customSites = customSites
         }
     }
 
@@ -112,7 +126,16 @@ public enum ConversationRouter {
         // them (e.g. "where do i click to open settings" must point, not launch
         // Settings; "click the new tab button" must click on screen, not open a
         // browser tab).
+        // 0) A draft or a Bear note is a command that starts with its own verb, so it is tested before
+        //    every keyword route below: words inside the message ("tell bob the weather is nice", "play",
+        //    "youtube", "in text") must not turn it into a web answer, a video or a search. Questions and
+        //    fragments are not commands and fall through unchanged.
+        if EmailDraftPlanner.request(from: transcript) != nil { return .draftEmail }
+        if BearNotePlanner.request(from: transcript) != nil { return .bearNote }
+
         let isClickCommand = wantsClick(text)
+        //    Clicking Send is never done for the user, with or without the screen.
+        if isClickCommand, SendGuard.clickTargetsSend(text) { return .refuseSend }
         let isPointingQuestion = isClickCommand || wantsPointing(text)
             || (context.previousTurnWasPointing && PointingFollowUp.isBareFollowUp(text))
 
@@ -139,12 +162,15 @@ public enum ConversationRouter {
             //        instead of just launching it. ("open spotify" has no playback
             //        verb, so it still falls through to openApp.)
             if ComputerActionPlanner.spotifyAction(from: text) != nil { return .spotify }
+            //    a7) "go to youtube and play X": a play verb plus youtube. After Spotify
+            //        and before openApp/browser so it is not read as a plain site open.
+            if AgentTaskPlanner.mediaIntent(from: text) != nil { return .playMedia }
             //    b) "launch spotify" / "open the notes app" — open an installed app.
             //       Checked before the browser so explicit app phrasing isn't read
             //       as a website (e.g. "launch spotify" opens the app, not the site).
             if AppCommandPlanner.isAppLaunch(text) { return .openApp }
             //    c) "open a new tab and go to gmail" — navigate the browser.
-            if isBrowserCommand(text) { return .browserCommand }
+            if isBrowserCommand(text, customSites: context.customSites) { return .browserCommand }
         }
 
         // 2) No screen this turn (text-only mode, or no permission) → text path.
@@ -336,7 +362,7 @@ public enum ConversationRouter {
     /// Imperative verb aimed at the web/browser. Tightly gated so on-screen
     /// requests like "open the file menu" or "click the settings button" do NOT
     /// get mistaken for browser navigation.
-    static func isBrowserCommand(_ text: String) -> Bool {
+    static func isBrowserCommand(_ text: String, customSites: [String: String] = [:]) -> Bool {
         // A new browser tab is unambiguous.
         if text.contains("new tab") || text.contains("open a tab") || text.contains("open another tab") {
             return true
@@ -348,10 +374,11 @@ public enum ConversationRouter {
             || text.hasPrefix("google ") {
             return true
         }
-        // Compose / draft an email is a browser action (Gmail compose).
+        // Compose / draft an email used to be a browser action here (an empty Gmail compose). A spoken
+        // draft command now has its own route, tested first in route(); what is left is the old rule for
+        // words the draft planner does not take as a command ("open my email").
         let composeVerb = ["compose", "draft", "write", "start", "open", "new"].contains { text.contains($0) }
         if composeVerb && (text.contains("email") || text.contains("e-mail") || text.contains("draft")) {
-            // "open up a draft", "compose an email", "write an email", "new email"
             return true
         }
 
@@ -361,13 +388,13 @@ public enum ConversationRouter {
         let hasNavVerb = navVerbs.contains { text.contains($0) }
         guard hasNavVerb else { return false }
 
-        if hasWebTarget(text) { return true }
+        if hasWebTarget(text, customSites: customSites) { return true }
         return false
     }
 
     /// True if the text names something clearly on the web: a known site, a URL,
     /// or a generic web noun.
-    static func hasWebTarget(_ text: String) -> Bool {
+    static func hasWebTarget(_ text: String, customSites: [String: String] = [:]) -> Bool {
         if text.contains("http://") || text.contains("https://") || text.contains("www.")
             || text.contains(".com") || text.contains(".org") || text.contains(".net")
             || text.contains(".io") || text.contains(".dev") || text.contains(".gov") {
@@ -376,6 +403,7 @@ public enum ConversationRouter {
         let webNouns = ["website", "web site", "web page", "webpage", "browser", " tab",
                         "my email", "my inbox", "my mail", "the internet"]
         if webNouns.contains(where: text.contains) { return true }
+        if CustomSites.entries(from: customSites).contains(where: { text.contains($0.keyword) }) { return true }
         return knownSites.contains { text.contains($0) }
     }
 

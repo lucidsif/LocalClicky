@@ -14,6 +14,8 @@ import Foundation
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    /// The event user data of every key press, so an agent run can tell its own keys from the user's.
+    let keyDownPublisher = PassthroughSubject<Int64, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -117,6 +119,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
                 shortcutTransitionPublisher.send(.released)
             }
             return Unmanaged.passUnretained(event)
+        }
+
+        if eventType == .keyDown {
+            keyDownPublisher.send(event.getIntegerValueField(.eventSourceUserData))
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))

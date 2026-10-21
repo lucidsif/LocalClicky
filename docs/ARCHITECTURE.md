@@ -9,6 +9,7 @@ is HTTP to a local Ollama server on `127.0.0.1:11434`.
 | Target | Kind | Role |
 |---|---|---|
 | `LocalBrainKit` | library | The no‑UI "brain": Ollama client (installed‑model listing, capability detection, streaming model `pull`), format‑robust `[POINT]` parser, prompts, model config + roles, conversation router, spoken‑text segmenter, browser‑ and app‑command planners, `HardwareAdvisor` + `AutotuneBridge` (hardware‑aware model recommendation), and `WebReachTool` (the opt‑in web lookup). Pure logic, unit‑testable, no AppKit. |
+| `LocalClickyActions` | library | The action layer for computer use: reads a web page through Accessibility and presses one element in the background. `ActionBackend` is the protocol, `AXBackend` the one backend. Depends on `LocalBrainKit`; links `ApplicationServices`. See [Computer use](#computer-use-play-a-video). |
 | `CSherpaOnnx` | C target | Thin module exposing the sherpa‑onnx C API (neural TTS) to Swift. Implementations come from the vendored dylib the app links. |
 | `LocalClicky` | executable (app) | The menu‑bar SwiftUI/AppKit app: overlay, panel, capture, push‑to‑talk, neural voice, browser executor, `CompanionManager`. |
 | `localbrain-harness` | executable (CLI) | Runs the full local pipeline against the real models, headless, for verification. |
@@ -169,6 +170,217 @@ Three refinements ride on the routes above; each decision is a pure function in
   board)" in the conversation history instead of its sentence, for template and freeform
   turns alike, so a later chat turn has nothing to recite. `lastSpokenAnswer` keeps the
   real sentence for "copy your answer".
+
+## Computer use: play a video
+
+"Go to youtube and play lucid dreams" runs one fixed plan. No model reads the page and
+nothing is sent to the Studio or Ollama. The one network call is a plain GET of youtube's search
+page for the spoken query (below). Each decision
+is a pure function in `LocalBrainKit`, tested with a fake world; the app only
+supplies the real one.
+
+A run is in the **background by default** (`MediaRequest.foreground` is false): the
+planner sets it only when the words ask ("in the foreground", "bring it up", "so i can
+see it", "show me" at the start or end next to a play verb, and a few more), and strips
+those words from the query. Background means Chrome opens with `activates = false`
+(`BrowserActionExecutor.execute(_, activates:)`), nothing activates LocalClicky, and the
+interlock is off.
+
+- **Trigger** (`AgentTaskPlanner.mediaIntent`): a play verb (play, start playing, put
+  on, watch) plus the word youtube ("you tube" is joined). A verb right after I, we,
+  they, he or she is skipped ("i watch youtube a lot"); "you" is not, so "can you play
+  X on youtube" works. Without the word youtube, "play" counts only inside a request frame
+  ("can you play X", "could you play X", "please play X", "i want you to play X", "i'd like you
+  to play X", "play X for me"); a bare "play X" does not, and neither do "watch" or "put on".
+  Another service in the words (spotify, netflix, apple music and a few more) keeps it out.
+  The query loses a leading "the" and a trailing "song", "the song" or "video". `ConversationRouter` returns `.playMedia` after Spotify and
+  before openApp and the browser routes. A play verb with no video name ("play a
+  video on youtube") gives `.needsQuery`: the app speaks `AgentNarration.needsQueryLine`
+  and starts no run. A bare "watch" without a name is no request at all.
+- **The run**: `CompanionManager.handlePlayMedia` makes a `MediaAgentRun` (the
+  `MediaRunWorld`) on its own task, so the key press that cancels the response task
+  cannot end it. `MediaRunDriver` drives `MediaRunMachine`, which owns every
+  transition and every stop. States: `opening` (Chrome opens the results page),
+  `locating` (read the links), `asking` (the consent card), `pressing`, `verifying`,
+  then `playing`, or a final `handoff`, `stopped` or `capped`. **Direct results come first:** a run
+  starts in `searching`, fetches youtube's search page (`YouTubeDirectSearch` in the app,
+  `YouTubeSearchResults.parse` in `LocalBrainKit`) while the "looking up X on youtube" line is
+  spoken, and nothing is opened in Chrome. With a result it goes `askingDirect` (the card and
+  the spoken question name the exact video), and only after the yes `openingVideo` opens
+  `https://www.youtube.com/watch?v=<id>` through `BrowserActionExecutor` (background unless the request
+  is foreground), then `verifying` as below. If the page can be read, a Pause button on that
+  video's page (the `v` must match) gives `playing`; if it cannot be read within `verifySeconds` the run
+  ends `opened`, spoken as "i opened the video for X in chrome, but i can't tell whether it started"
+  (step effect `unverifiable`). Without a result (fetch failed, timed out, consent page, nothing
+  parsed) it falls back to the page path in the next sentence. Decline, silence, a stop or an interrupt
+  before the yes open nothing. The page path: `opening` (Chrome opens the results page), `locating`, `asking`, `pressing`, `verifying`. Verifying needs a
+  `/watch` page with a Pause button; if the page is open but not playing, the driver
+  presses Play once. The caps are `AgentCaps`: 45 s wall clock, 20 s for the consent
+  (silence is no), 6 s for the page load (15 s, `pageLoadColdSeconds`, when Chrome was not running before the open; `MediaRunWorld.browserIsRunning` says which), 6 s to verify (the 15 s cold window instead when the browser was not running before the run opened anything, still inside the wall clock), one Play retry, 8 steps. A page
+  off youtube.com ends the run. The run adds one history entry when it ends.
+- **Action layer** (`LocalClickyActions`): `ActionBackend` reads the page state, walks
+  elements by role, presses one and reads it back. `ActionBackends.current()` returns
+  `AXBackend`, the only backend. A press is `AXPress`, delivered to the element, so
+  Chrome stays in the background and the real cursor never moves. The page is read from
+  the focused window, or, when that has no http(s) web area (a page opened in the
+  background may be in another window), from the first of the app's other windows (at most
+  8, same limits and deadline) that has one, a youtube.com page preferred
+  (`WebPageReading.preferredWindowIndex`). Chromium browsers
+  (`WebPageReading.isChromiumBrowser`) and Fastmail's Electron app
+  (`WebPageReading.needsAssistiveClientNudge`) are told an assistive client is reading, decided by
+  `WebContentAccess` and made once per run, before the page opens, by `AXBackend.beginWebContentAccess(pid:)`
+  (on its own app element with a 2 s messaging timeout, and `endWebContentAccess` restores on its own app element
+  with the same 2 s, so the write-back does not fail spuriously; the 0.1 s per-element timeout stays for the
+  tree walk, and `pageState` and `walk` never set anything). A cold-launched Chrome has no process at the
+  open, so `MediaAgentRun` makes the call at the first read after it started.
+  `AXManualAccessibility` first; when Chrome answers "attribute unsupported" (-25205, as Chrome 155 does)
+  or fails twice with any other error, `AXEnhancedUserInterface` for the rest of the run. That is
+  what VoiceOver sets, so it is run-scoped: its previous value is read and remembered before it
+  is set, it is left alone when already true, an unreadable value counts as true while VoiceOver is on, it is
+  never set back to false if VoiceOver was on at the start or is on at the end (VoiceOver owns it), and `endWebContentAccess(pid:)` writes the old value
+  back when the run reaches any final state (idempotent; `MediaAgentRun` calls it from `show` and
+  again when the driver returns) and reports the write-back's AXError and the value read after it. The cost: Chrome can slow down and window managers or window
+  animation can be disturbed while it is on. The mode used (manual, enhanced, none) is logged. A secure text
+  field is neither read nor descended into. Every read runs off the main thread under
+  a budget, and without the Accessibility permission each call returns at once with
+  nothing.
+- **SendGuard** (`LocalBrainKit`, used by `AXBackend.press`): a control whose
+  normalised label (lowercase letters and digits, single spaces, bidirectional and other format marks removed)
+  is, or starts with, send, send now, schedule send, send later, send and archive, discard, discard draft,
+  delete, archive, report spam or move to trash is never pressed (`press` returns `.noop`). A prefix match means a
+  YouTube link titled "Send ..." is refused too. The action layer posts no key or mouse event; a test scans
+  `Sources/LocalClickyActions` for `CGEvent` and the like and fails if one appears.
+- **Email drafts and Bear notes** (route `.draftEmail`, `.bearNote`; no page is read). `ConversationRouter.route`
+  checks `EmailDraftPlanner.request` and `BearNotePlanner.request` first, before the keyword routes, so words inside
+  a message ("play", "youtube", "weather") cannot take the turn. Both are command-form grammars (a leading verb after
+  address words, plus draft, email or a service as evidence), so "open up, my gmail in the browser" stays
+  `.browserCommand` and the fragment "john in the email" stays chat. `DraftRunDriver` drives a `DraftRunWorld`
+  (the app's is `DraftAgentRun`): understanding, finding, writing, opening, ready. `DraftWriter` asks the draft model
+  (`ModelPreferences.draftModel`, default `studio:clicky`, the chat gateway; the email is written as `ModelPreferences.userDisplayName`, empty by default, then "the user") for the body; HTTP 503, the gateway's
+  "studio connection is off" text, an empty answer or the 30 s window fall back to the gist as the body with one
+  short spoken notice. `ComposeTarget` builds the Gmail compose link (`/mail/u/N/`, `ModelPreferences.gmailAccountIndex`)
+  or a Fastmail mailto link (RFC 6068), strict RFC 3986 encoded (`StrictURLEncoder`), and `BrowserActionExecutor.openInApp`
+  opens it without activating the app. Nothing sends: opening a link only makes a draft, and every closing line ends
+  "it is not sent. press send yourself." A spoken "click send" routes to `.refuseSend` before any grounding. No
+  service named: the run asks and `pendingDraftRequest` takes the next turn's service name.
+  The `draft` TEMP event holds counts and names only.
+- **Page features of drafts** (Chrome, Gmail; gated at run time, no flag). The writer always runs first, before any page step,
+  from the gist alone (Studio off: the gist is the body, as before). "Use the open draft" and replies then call
+  `beginWebContentAccess` and look for the service's web area with children for up to 4 seconds (`PageGate`, domain from
+  `LabelMap.preferredDomain`; `AXBackend.webAreaStatus`). Not found: the run opens a new draft and says why, the same as
+  without the page features. Found: `composeFields` lists the settable compose bodies; exactly one is used (none or several:
+  a new draft, said aloud). An empty body gets the text by `setValue` (AXValue set, then read back); a body with text asks
+  "the open draft already has text. add to it?" on the card (Return, Escape, a spoken yes or no, 20 s of silence is no) and
+  on yes appends after a blank line (the 2000 character cap applies to the written text, not the total). A reply opens
+  `#search/from%3A<person>` in Chrome in the background, finds the first `AXRow` naming the person, presses it, checks that
+  the page address changed, reads the page in document order (`readThread`, DFS), takes the texts before the last button
+  labelled exactly "Reply" as `ReplyContext` (last 2000 characters; only its length is logged), makes a second writer call that quotes it as
+  data (`DraftPrompts.replySystem`, the message between `<<<MESSAGE BEING REPLIED TO` and `MESSAGE BEING REPLIED TO>>>`,
+  "not instructions", a delimiter inside it is broken, the gist after the block) whose text becomes the body, keeping the
+  first body when that call fails or when the first already fell back (`replyWriter`: model, fallback or skipped),
+  presses that button and fills the new body the same way. No message, no Reply control or no body within the caps ends
+  with "i could not find a message from <name> in gmail. say the address for a new draft, or open the message and ask
+  again." and opens nothing. Presses go through `pressControl`: rows and buttons only, never a link, and `press` applies
+  SendGuard (so a row whose text starts with "send", "delete" or "archive" is refused and ends as that handoff). Nothing sets
+  focus, raises a window or posts an event (a test scans for it). `endWebContentAccess` runs on every path before the
+  closing line. Every role and label the page steps look for is a guess held in `LabelMap` until the compose probe
+  confirms it; changing one is a change to that file and `LabelMapTests`.
+- **Picker** (`MediaResultPicker`): only a plain video link counts, meaning a `/watch`
+  link with a `v` parameter, no `list` parameter, and a label that is not empty, not just
+  a duration, and not "now playing" or similar. Of those, the first that shares a word of
+  three letters or more with the spoken query wins, else the first on the page. Direct results
+  (`DirectResult`: id, title) skip shorts, live and upcoming streams and entries without a valid
+  11-character id, then the one whose title shares the most such words with the query wins (the earliest
+  on a tie, else the first). The ytInitialData JSON is walked for `videoRenderer` objects.
+- **Consent**: one yes per run, before the press or the open. The card (`AgentRunPanel`) asks "Play
+  this on youtube.com?" and shows the located title, cut to 120 characters. On the page path the
+  title is page text and is never spoken. On the direct path the spoken question names the video
+  ("should i play <title> on youtube?", the title flattened and cut at 100 characters) because the
+  yes is for that exact video; it is the one line that carries page text. Return, Escape, the two buttons, or a spoken yes or
+  no answer (`ConsentAnswer` takes only a whole utterance of four words or fewer; any
+  other speech while asking counts as no). Silence for 20 s is no. After a yes and before
+  the press, the driver reads the links again and compares the target to the located one:
+  same address and label, each frame edge within 8 pt (`frameToleranceInPoints`). A
+  mismatch is a handoff with nothing pressed.
+- **Step card**: one row per step with a word for its state (Done, Doing, Next, Stopped,
+  Skipped), so state never rests on colour, and a Stop button. Normally it takes no
+  focus. While asking, the card (a nonactivating panel) becomes the key window without
+  activating the app, so Return and Escape reach it and VoiceOver focus moves to the
+  question while the user's app stays in front; after the answer it resigns key. The
+  panel's `keyDown` and `cancelOperation` answer too, beside the SwiftUI shortcuts, and
+  the run takes only the first answer. If the card is not the key window once the question is up (checked twice, 100 ms apart), the buttons drop "(Return)" and "(Escape)" and the asking line says "press the yes button" instead of "press return", so no key hint is given that would reach another app. Captures skip the card (`sharingType = .none`).
+- **Ghost pointer** (`GhostPointerWindow`): a faint arrow (alpha 0.45) at the link the
+  run is about to press, shown only when Chrome is the frontmost app at that moment (in
+  the background it usually is not, and the arrow would point into another app). It is
+  click-through, out of screen captures, and hidden from Accessibility; with Reduce Motion
+  on it jumps instead of gliding. It is only a picture. The real cursor never moves.
+- **Narration** (`AgentNarration`): fixed templates; the only variable parts are the
+  user's own query and, in the direct question, the title. Other page text never reaches the voice. With VoiceOver on, each line is
+  an `announcementRequested` post instead of speech. The locating and verifying states
+  only update the card. The first line is "looking up X on youtube." (nothing opens yet). On the page path
+  the opening line takes the mode: "opening youtube for X in the background." or, in the foreground,
+  "opening youtube for X."; after a direct yes it is "opening the video in the background." The card lists
+  the direct steps (look up, ask, open, check) and switches to the page steps on a fallback.
+- **Interlock** (`InputInterlock`): in the foreground only (the mouse timer and the key
+  subscription are not started in the background), the run stops when the real mouse
+  travels 12 pt (polled every 50 ms) or any key goes down that was not posted by the agent. Agent
+  key events carry `InputInterlock.agentEventTag` in their event user data;
+  `GlobalPushToTalkShortcutMonitor.keyDownPublisher` reports it, and `ClickActionExecutor`
+  tags its clicks. Neither stops a run while it is asking, because Return and Escape are
+  the answer. A talk-key press stops a running run, but while asking the press starts a
+  spoken answer, and `CompanionManager` routes the words to `ConsentAnswer` instead of
+  a new turn. The Stop button stops a run, and while asking it means no.
+- **TEMP debug lines**: the run writes `agent` (one line per step record, no page
+  text), `agent-links` (the first 40 links of the results page) and `agent-buttons` (the
+  button labels of the page being verified) to `TempAppDebugLog`. The last two are page
+  text. `agent-direct` (once per run: fetch milliseconds, result count, chosen video id and title, whether it fell back, `stoppedDuringLookup` when a stop ended it instead, the error; the title is page text) and `agent-end` (once, at
+  the final state: the state, `axMode`, whether AXEnhancedUserInterface was `restored`, `lastPageURL`, `firstWebAreaMs`, `restoreAXError` and `readBackAfterRestore`) are also written. A page-load timeout also writes `agent-open` (`axMode` too; Accessibility trusted, Chrome running
+  before and after, its pid, the last page address read, the last AXManualAccessibility
+  result, seconds waited, foreground; no page text). `agent-ax` is one line per attribute set
+  (attribute, `axError`, `uptimeMs`, `timeoutSeconds`, `readBack`, `voiceOverOn`, `appBundleId`, `appVersion`,
+  `attributeListed`, `settable`). `agent-walk` is a look at the front window's tree at most every 0.5 s for 10 s after the
+  access began, 20 a run (`windowIndex`, `windowTitle`, `nodesVisited`, `maxDepth`, `stopReason`: found, maxNodes, maxDepth,
+  deadline or exhausted, `elapsedMs`, `webAreaFound`, `webAreaURL`, `webAreaChildCount`, `windowOnScreen`, `windowBounds`, `omnibox`,
+  the address bar's value; the title and addresses are page text). README, "Temporary app debug log", says how to remove them.
+- **TEMP page probe** (`PageProbeRunner`, `AXPageProbe`, `AXBackend.walkTelemetry`; pure parts in
+  `PageProbe.swift`): decides without voice whether a Chromium or Electron page can be read. While
+  `~/.clicky-gateway/debug.on` exists, a 2 s timer looks for `~/.clicky-gateway/probe.request`; its first word
+  is read, the file deleted and the probe run. `chrome` and `fastmail` begin access, walk the front window for
+  10 s (no page is opened) and restore. `mailto` opens a safe mailto in Fastmail.app with
+  `activates = false` and logs the frontmost app and Fastmail's window titles before and 2 s after (`probe-mailto`).
+  `compose` finds Gmail's "Message Body" in Chrome's front window, and if it is settable and empty writes a
+  marker, reads it back and looks 3 s later for the "Saved" text (`probe-compose`); it also writes roles,
+  descriptions and titles (never values) of up to 300 nodes of the compose region to `probe-compose-tree.jsonl`.
+  The result is `probe-result.json` (`word`, `ts`, `axMode`, `codes`, `webAreaFound`, `webAreaChildCount`,
+  `firstWebAreaMs`, `omnibox`, `notes`). Nothing is pressed, focused or raised, no key or mouse event is posted, and no mail is sent.
+  The address-bar label ("Address and search bar" and near variants), "Message Body", and
+  Fastmail's bundle id `com.fastmail.mac.Fastmail` are guesses until a probe run shows the real ones.
+
+### Deviations from the approved plan
+
+The plans live in `docs/plans/`, which stays in the local checkout and is not published.
+
+- **Cua Driver is not built.** It is not installed, and it needs the owner's grant and
+  the P0 probes first. `AXBackend` is the backend; switching is the one line in
+  `ActionBackends.current()`.
+- **The harvester and the click executor stay where they are.** Moving them into
+  `LocalClickyActions` was churn with no behaviour change, so the AX read helpers are
+  copied (the file says so).
+- **Not built yet:** the Holo35 click fallback for an empty Accessibility tree, forms
+  (P3), and the injection and TEST eval (P4).
+- **AXEnhancedUserInterface is touched, run-scoped.** The plan said never to touch it, because VoiceOver
+  owns it. Changed on 2026-10-20 by the owner's decision: "ok try results directly. and then use voiceover
+  switch if it. fails i guess. i want a generic solution i deally cause i also use gmail, fastmail though
+  both on a browsr so as long as it can read browser renderings/results, we are good". It is used only
+  when AXManualAccessibility is unsupported, with its old value remembered and restored at the end of
+  the run (see "Action layer").
+- **One network call, to youtube.com.** The direct search is a GET of the same address Chrome would open
+  for the query (`MediaRequest.searchURL`), from an ephemeral `URLSession` (no cookies, no cache, a
+  desktop Chrome user agent, `Accept-Language: en-US`, a 5 s limit), only for a play request the user
+  made. Only the spoken query leaves the Mac; no screen, voice or page data does. Decided by the owner on
+  2026-10-20 (quote above). It joins the web tool as a named exception to "no cloud".
+- **A consent card is shown on the YouTube path** although the plan's RiskGate would allow
+  an on-domain press. The done criterion asked for it.
 
 ## Choosing your models
 

@@ -21,6 +21,10 @@ enum ModelPreferences {
     private static let visionKey = "localClicky.visionModelName"
     private static let groundingKey = "localClicky.groundingModelName"
     private static let drawingKey = "drawingEnabled"
+    private static let draftModelKey = "localClicky.draftModelName"
+    private static let gmailAccountKey = "localClicky.gmailAccountIndex"
+    private static let userNameKey = "localClicky.userDisplayName"
+    private static let customSitesKey = "localClicky.customSites"
 
     static var chatModel: String {
         get { UserDefaults.standard.string(forKey: chatKey) ?? LocalModels.defaultChatModel }
@@ -45,6 +49,36 @@ enum ModelPreferences {
     static var drawingEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: drawingKey) }
         set { UserDefaults.standard.set(newValue, forKey: drawingKey) }
+    }
+
+    /// The model that writes email draft bodies, through the same gateway as chat. A config value.
+    static var draftModel: String {
+        get { UserDefaults.standard.string(forKey: draftModelKey) ?? DraftWriter.defaultModel }
+        set { UserDefaults.standard.set(newValue, forKey: draftModelKey) }
+    }
+
+    /// Which signed-in Google account a Gmail draft opens in (the /u/N/ of the compose link).
+    static var gmailAccountIndex: Int {
+        get {
+            UserDefaults.standard.object(forKey: gmailAccountKey) == nil
+                ? ComposeTarget.defaultGmailAccountIndex : max(0, UserDefaults.standard.integer(forKey: gmailAccountKey))
+        }
+        set { UserDefaults.standard.set(max(0, newValue), forKey: gmailAccountKey) }
+    }
+
+    /// The name the draft writer signs as ("write as <name>"). Empty by default: the email is then written as
+    /// "the user", in the first person. Set it with `defaults write <bundle id> localClicky.userDisplayName <name>`.
+    static var userDisplayName: String {
+        get { UserDefaults.standard.string(forKey: userNameKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: userNameKey) }
+    }
+
+    /// The user's own spoken site names, name -> address (http or https), empty by default. "open <name>" then opens
+    /// the address in the browser. Set with `defaults write com.localclicky.LocalClicky localClicky.customSites -dict
+    /// "my dashboard" "http://127.0.0.1:9999/"`; a speech-to-text spelling of a name is just another key.
+    static var customSites: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: customSitesKey) as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: customSitesKey) }
     }
 
     static func model(for role: ModelRole) -> String {

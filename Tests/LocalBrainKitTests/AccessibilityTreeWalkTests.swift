@@ -29,6 +29,73 @@ final class AccessibilityTreeWalkTests: XCTestCase {
                                       shouldStop: shouldStop)
     }
 
+    // MARK: Breadth first
+
+    private func visitOrder(_ roots: [Node], maxNodes: Int = 200, maxDepth: Int = 6,
+                            shouldStop: () -> Bool = { false },
+                            stopAt: String? = nil) -> (names: [String], depths: [Int], visited: Int, stoppedEarly: Bool) {
+        var names: [String] = []
+        var depths: [Int] = []
+        let result = AccessibilityTreeWalk.breadthFirst(
+            roots: roots, maxNodes: maxNodes, maxDepth: maxDepth,
+            children: { $0.kids }, shouldStop: shouldStop,
+            visit: { node, depth in names.append(node.name); depths.append(depth); return node.name == stopAt })
+        return (names, depths, result.visited, result.stoppedEarly)
+    }
+
+    func testBreadthFirstVisitsLevelByLevelWithDepths() {
+        let tree = Node("a", nil, [Node("b", nil, [Node("d", nil)]), Node("c", nil, [Node("e", nil)])])
+        let out = visitOrder([tree])
+        XCTAssertEqual(out.names, ["a", "b", "c", "d", "e"])
+        XCTAssertEqual(out.depths, [0, 1, 1, 2, 2])
+        XCTAssertEqual(out.visited, 5)
+        XCTAssertFalse(out.stoppedEarly)
+    }
+
+    func testBreadthFirstNodeCapStopsAndReportsEarly() {
+        let tree = Node("a", nil, (0..<10).map { Node("k\($0)", nil) })
+        let out = visitOrder([tree], maxNodes: 4)
+        XCTAssertEqual(out.names, ["a", "k0", "k1", "k2"])
+        XCTAssertTrue(out.stoppedEarly)
+    }
+
+    func testBreadthFirstDepthCapDoesNotAskForDeeperChildren() {
+        let leaf = Node("leaf", nil)
+        let mid = Node("mid", nil, [leaf])
+        let root = Node("root", nil, [mid])
+        let out = visitOrder([root], maxDepth: 1)
+        XCTAssertEqual(out.names, ["root", "mid"])
+        XCTAssertEqual(mid.childReads, 0)
+        XCTAssertFalse(out.stoppedEarly)
+    }
+
+    func testBreadthFirstShouldStopHaltsBeforeTheNextNode() {
+        let tree = Node("a", nil, [Node("b", nil), Node("c", nil)])
+        var checks = 0
+        let out = visitOrder([tree], shouldStop: { checks += 1; return checks > 2 })
+        XCTAssertEqual(out.names, ["a", "b"])
+        XCTAssertTrue(out.stoppedEarly)
+    }
+
+    func testBreadthFirstVisitReturningTrueStopsTheWalkAtOnce() {
+        let tree = Node("a", nil, [Node("b", nil), Node("c", nil)])
+        let out = visitOrder([tree], stopAt: "b")
+        XCTAssertEqual(out.names, ["a", "b"])
+        XCTAssertEqual(out.visited, 2)
+        XCTAssertTrue(out.stoppedEarly)
+    }
+
+    func testBreadthFirstChildrenAskedRightAfterVisitSoVisitCanPrune() {
+        let pruned = Node("pruned", nil, [Node("hidden", nil)])
+        let tree = Node("a", nil, [pruned, Node("c", nil)])
+        var names: [String] = []
+        _ = AccessibilityTreeWalk.breadthFirst(
+            roots: [tree], maxNodes: 50, maxDepth: 6,
+            children: { $0.name == "pruned" ? [] : $0.kids }, shouldStop: { false },
+            visit: { node, _ in names.append(node.name); return false })
+        XCTAssertEqual(names, ["a", "pruned", "c"])
+    }
+
     // MARK: Rect filter
 
     func testOverlapKeepsInsidePartialAndTouchingAndDropsApartOrEmpty() {
