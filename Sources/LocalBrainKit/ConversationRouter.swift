@@ -48,6 +48,13 @@ public enum ConversationRoute: Equatable, Sendable {
     /// Clear what the assistant drew ("clear that"). Only produced by
     /// DrawingRouting, and only while the drawing setting is on.
     case clearMarks
+    /// With a sketch on the screen or just taken off it: "keep it" (stays until "clear"), "undo that" (a kept
+    /// sketch loses its last group), "describe the sketch" (read back from the record), and "add the curb" (a
+    /// kept sketch is extended by the model). Only produced by DrawingRouting, from the canvas status it is given.
+    case keepSketch
+    case undoSketch
+    case describeSketch
+    case extendSketch
     case text
     case browserCommand
     /// Open / launch a local macOS application ("launch spotify", "open the

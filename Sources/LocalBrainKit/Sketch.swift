@@ -27,31 +27,30 @@ public enum SketchLimits {
     /// One switch for the model-written path. When false, a figure with no template
     /// is answered with SketchTemplate.unsupportedSentence and no model call.
     public static let freeformEnabled = true
-    /// The most tags a freeform sketch may draw.
+    /// The most tags the old one-sentence prompt (LocalPrompts.screenSketchResponse, pinned and no longer
+    /// used by the app) asks for.
     public static let maxTags = 8
-    /// The prompt asks for no more than this many tokens: 8 tags and one sentence.
-    public static let freeformAnswerMaxTokens = 400
+    /// A step sketch (SketchPrompts.stepSketch) has at most this many steps...
+    public static let maxSteps = 6
+    /// ...and at most this many tags over all its steps (and per extend turn). Tags past it are dropped.
+    public static let maxStepTags = 24
+    /// A label is cut to this many words.
+    public static let maxLabelWords = 4
+    /// The most tokens a step sketch reply may use. A typical tag, such as a 4 point polygon with a label, is
+    /// about 50 tokens (the coordinates are the bulk: each number tokenizes in pieces); 24 tags is about 1200.
+    /// Six steps of a marker and a sentence of 20 words add about 180. 1380 with about 15 percent headroom is
+    /// 1600. A tag the cap cuts off is dropped, never guessed (SketchStepParser).
+    public static let freeformAnswerMaxTokens = 1600
     /// Spoken when the model's reply holds no valid tag.
     public static let failureSentence = "i could not draw that one."
 
+    /// Spoken when an extend turn cannot run (the model path is off, or no grounding model is installed).
+    public static let cannotExtendSentence = "i cannot add to that sketch right now."
+    /// Spoken for "keep it", "clear that" and the like when nothing is drawn.
+    public static let nothingDrawnSentence = "nothing is drawn right now."
+
     /// Spoken when tags closed but the reply holds no sentence (the prompt asks for one; a screen reader user needs it).
     public static let drawnSentence = "here is the drawing, in the middle of your screen."
-
-    /// What a freeform sketch speaks: the failure sentence with no valid tag, else the reply's own words with
-    /// every complete tag removed and a tag cut off by the token cap dropped, else `drawnSentence`.
-    public static func spokenSentence(in reply: String, closedTags: Int) -> String {
-        guard closedTags > 0 else { return failureSentence }
-        let words = ShapeTagParser.stripAllTags(from: reply)
-            .replacingOccurrences(of: #"\[[^\[\]]*$"#, with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return words.isEmpty ? drawnSentence : words
-    }
-
-    /// Whether a freeform sketch may draw this tag: shapes only (the prompt has no HIGHLIGHT) and at most `maxTags`.
-    public static func admits(_ drawing: InkDrawing, alreadyClosed: Int) -> Bool {
-        guard case .shape = drawing else { return false }
-        return alreadyClosed < maxTags
-    }
 }
 
 public enum SketchHistory {
@@ -80,7 +79,12 @@ public enum SketchHistory {
 public enum SketchTiming {
     /// A sketch is the point of its turn, so it stays this long after the speech
     /// (a mark that accompanies a sentence holds 1.5 s). A key press or "clear that" ends it sooner.
-    public static let holdSeconds: Double = 10
+    /// 20 s, not 10: there has to be time to say "keep it", and a key press takes an unkept sketch off
+    /// the screen (the record stays, so "keep it" redraws it; see SketchCanvas).
+    public static let holdSeconds: Double = 20
+    /// A step sketch's held marks (SpeechMarkScheduler hold mode) wait for their clips. When every sentence
+    /// has gone to the speech client and nothing has played for this long, the wait ends and the rest show.
+    public static let flushGraceSeconds: Double = 2
 }
 
 /// Where on the screen a template figure goes: one of nine regions, row-major.
@@ -148,13 +152,16 @@ public struct SketchRequest: Equatable, Sendable {
     public let size: SketchSize
     /// Tic tac toe only: 9 cells, row-major (`SketchTemplate.emptyBoard` otherwise).
     public let board: String
+    /// The words kept it in the request itself: "sketch and keep how to parallel park", "draw a house and keep it".
+    public let keep: Bool
 
     public init(figure: SketchFigure, anchor: SketchAnchor = .centre, size: SketchSize = .normal,
-                board: String = SketchTemplate.emptyBoard) {
+                board: String = SketchTemplate.emptyBoard, keep: Bool = false) {
         self.figure = figure
         self.anchor = anchor
         self.size = size
         self.board = board
+        self.keep = keep
     }
 }
 
@@ -171,6 +178,10 @@ public enum SketchIntent {
         var text = transcript.lowercased()
         // "draw up", "draw conclusions" and "draw attention" are not drawing.
         guard text.range(of: #"\bdraw\s+(?:up|conclusions?|attention)\b"#, options: .regularExpression) == nil else { return nil }
+
+        // "and keep it" is not a target ("it") and not part of the thing to draw: it keeps the sketch.
+        let keep = text.range(of: keepInRequest, options: .regularExpression) != nil
+        if keep { text = text.replacingOccurrences(of: keepInRequest, with: " ", options: .regularExpression) }
 
         // Tic tac toe words come first: a move ("x in the centre") holds a region word the placement
         // patterns would otherwise strip, and "an x on the left" holds a target cue.
@@ -204,14 +215,18 @@ public enum SketchIntent {
         // A target cue means the words draw at something on the screen: a mark turn.
         guard targetCues.allSatisfy({ text.range(of: $0, options: .regularExpression) == nil }) else { return nil }
 
-        let verbs = (try? NSRegularExpression(pattern: #"\b(draw|sketch|doodle|put|place|make|show|give|add|create)\b"#))?
+        let verbs = (try? NSRegularExpression(pattern: #"\b(draw|sketch|doodle|diagram|illustrate|put|place|make|show|give|add|create)\b"#))?
             .matches(in: text, range: NSRange(text.startIndex..., in: text)) ?? []
         for verb in verbs {
             guard let verbRange = Range(verb.range, in: text) else { continue }
-            let drawing = ["draw", "sketch", "doodle"].contains(String(text[verbRange]))
+            let verb = String(text[verbRange])
+            let drawing = drawingVerbs.contains(verb)
+            // "diagram" and "illustrate" are also nouns and ordinary verbs ("the diagram of the heart shows",
+            // "that illustrates"): they start a sketch only where a command starts.
+            if ["diagram", "illustrate"].contains(verb), !isCommandLead(String(text[..<verbRange.lowerBound])) { continue }
             let afterVerb = text[verbRange.upperBound...].replacingOccurrences(of: #"[^a-z' -]"#, with: " ", options: .regularExpression)
             var words = afterVerb.split(separator: " ").map(String.init)
-            while let first = words.first, ["a", "an", "the", "some", "of", "up"].contains(first) { words.removeFirst() }
+            stripLeadingFiller(&words, includingHowTo: drawing)
             guard !words.isEmpty else { if drawing { return nil } else { continue } }
             let phrase = words.prefix(4).joined(separator: " ")
             let whole = words.joined(separator: " ")
@@ -242,12 +257,54 @@ public enum SketchIntent {
                     board = SketchTemplate.demoBoard
                 }
             }
-            return SketchRequest(figure: figure, anchor: anchor ?? .centre, size: size, board: board)
+            return SketchRequest(figure: figure, anchor: anchor ?? .centre, size: size, board: board, keep: keep)
         }
         return nil
     }
 
     private static let emptyBoardString = SketchTemplate.emptyBoard
+
+    /// "and keep it", "then keep that on the screen", ", pin it", "and leave it on screen", "and keep" (the object after it
+    /// is the thing to draw: "sketch and keep how to parallel park").
+    private static let keepInRequest = #"(?:\b(?:and|then)\s+|,\s*)(?:(?:keep|pin)(?:\s+(?:it|that|this|them))?|leave\s+it)(?:\s+on(?:\s+(?:the|my))?\s+screen)?\b"#
+
+    private static let drawingVerbs: Set<String> = ["draw", "sketch", "doodle", "diagram", "illustrate"]
+
+    /// Words that may stand before a command verb: "can you diagram ...", "please illustrate ...".
+    private static let commandLeadWords: Set<String> = ["please", "hey", "ok", "okay", "so", "now", "can", "could", "would", "will",
+                                                        "you", "go", "ahead", "and", "i", "want", "need", "d", "like", "to", "lets",
+                                                        "let", "s", "just", "also"]
+
+    private static func isCommandLead(_ text: String) -> Bool {
+        text.split(whereSeparator: { !$0.isLetter }).allSatisfy { commandLeadWords.contains(String($0)) }
+    }
+
+    /// Takes the words that are not the thing to draw off the front of what follows a drawing verb:
+    /// articles, "up" and "out" ("sketch out ..."), and a "how to" or "how do i" with the "do" that may follow
+    /// it ("sketch out how to do parallel parking" is "parallel parking"). A bare "how" goes too ("how a heart pumps blood" is "heart pumps blood").
+    /// The how-to words go only after a drawing verb: "show me how to box" must not become a box.
+    private static func stripLeadingFiller(_ words: inout [String], includingHowTo: Bool) {
+        let filler: Set<String> = ["a", "an", "the", "some", "of", "up", "out"]
+        var afterHowTo = false
+        while let first = words.first {
+            if filler.contains(first) {
+                words.removeFirst()
+            } else if includingHowTo, words.count > 2, first == "how", words[1] == "to" {
+                words.removeFirst(2)
+                afterHowTo = true
+            } else if includingHowTo, words.count > 3, first == "how", words[1] == "do", ["i", "you", "we"].contains(words[2]) {
+                words.removeFirst(3)
+                afterHowTo = true
+            } else if includingHowTo, words.count > 1, first == "how" {
+                words.removeFirst()
+            } else if afterHowTo, words.count > 1, first == "do" {
+                words.removeFirst()
+                afterHowTo = false
+            } else {
+                break
+            }
+        }
+    }
 
     /// Words that may follow a figure name and still be that figure ("tic tac toe board", "smiley face"), and the
     /// connectors left behind where a placement or a move was taken out ("a tic tac toe with an x in the middle").

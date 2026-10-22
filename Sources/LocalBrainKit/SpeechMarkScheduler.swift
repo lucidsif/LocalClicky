@@ -37,6 +37,17 @@
 //  least as late as every earlier mark's, so ordering never holds one past its
 //  own timeout.
 //
+//  Hold mode (`holdsBoundMarks`, off by default, used by step sketches). A step
+//  sketch closes each step's marks and queues its sentence as the step streams
+//  in, so step 3's clip starts seconds after its marks closed (the clips play
+//  one after another). The timeout above would show step 3 during step 1. In hold mode a
+//  mark bound to a sentence has no timeout: it waits for its clip, or for any
+//  later clip to start (a clip whose synthesis failed never announces itself,
+//  and a later clip starting proves the earlier ones are over). Marks that no
+//  sentence ever bound keep the timeout. Because a held mark can wait forever if
+//  speech fails, the caller ends the wait with `flush` once the speech has had
+//  its chance (see CompanionManager.startMarkDriver).
+//
 
 import Foundation
 
@@ -58,12 +69,17 @@ public struct SpeechMarkScheduler<Mark> {
 
     private var entries: [Entry] = []
     private var nextClipID: Int
+    private let holdsBoundMarks: Bool
     public private(set) var closedCount = 0
     public private(set) var releasedCount = 0
 
-    public init(firstClipID: Int = 1) {
+    public init(firstClipID: Int = 1, holdsBoundMarks: Bool = false) {
         nextClipID = firstClipID
+        self.holdsBoundMarks = holdsBoundMarks
     }
+
+    /// True in hold mode: a bound mark waits for its clip with no timeout.
+    public var isHolding: Bool { holdsBoundMarks }
 
     /// Marks waiting to be shown.
     public var pendingCount: Int { entries.count }
@@ -87,6 +103,7 @@ public struct SpeechMarkScheduler<Mark> {
         nextClipID += 1
         for index in entries.indices where entries[index].clip == nil {
             entries[index].clip = id
+            if holdsBoundMarks { entries[index].dueAt = .infinity }
         }
         return id
     }
@@ -95,9 +112,21 @@ public struct SpeechMarkScheduler<Mark> {
     /// the first word is heard (0 when unknown).
     public mutating func clipStarted(id: Int, audibleIn: Double = 0, at now: Double) {
         let due = now + max(0, audibleIn - SpeechMarkTiming.lead)
-        for index in entries.indices where entries[index].clip == id {
-            entries[index].dueAt = min(entries[index].dueAt, due)
+        for index in entries.indices {
+            guard let clip = entries[index].clip else { continue }
+            if clip == id {
+                entries[index].dueAt = min(entries[index].dueAt, due)
+            } else if holdsBoundMarks, clip < id {
+                // An earlier clip never announced itself; a later one playing means it is over.
+                entries[index].dueAt = min(entries[index].dueAt, now)
+            }
         }
+    }
+
+    /// Makes every waiting mark due at `now`, in their order. Hold mode's end of the wait:
+    /// the speech finished or never started, so nothing more will announce a clip.
+    public mutating func flush(at now: Double) {
+        for index in entries.indices { entries[index].dueAt = min(entries[index].dueAt, now) }
     }
 
     /// The marks due at `now`, oldest first. They are removed from the line.
@@ -128,13 +157,25 @@ public final class SpeechMarkSchedulerBox<Mark>: @unchecked Sendable {
     private let lock = NSLock()
     private var scheduler: SpeechMarkScheduler<Mark>
     private var inputFinished = false
+    private var speechQueued = false
     private var cancelled = false
     private let clock: @Sendable () -> Double
 
     public init(firstClipID: Int = 1,
+                holdsBoundMarks: Bool = false,
                 clock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }) {
-        scheduler = SpeechMarkScheduler(firstClipID: firstClipID)
+        scheduler = SpeechMarkScheduler(firstClipID: firstClipID, holdsBoundMarks: holdsBoundMarks)
         self.clock = clock
+    }
+
+    /// True in hold mode (see SpeechMarkScheduler).
+    public var isHolding: Bool { scheduler.isHolding }
+
+    /// Every waiting mark is shown at the next release (see SpeechMarkScheduler.flush).
+    public func flush() {
+        let now = clock()
+        lock.lock(); defer { lock.unlock() }
+        scheduler.flush(at: now)
     }
 
     public func markClosed(_ mark: Mark) {
@@ -166,6 +207,18 @@ public final class SpeechMarkSchedulerBox<Mark>: @unchecked Sendable {
     public func finishInput() {
         lock.lock(); defer { lock.unlock() }
         inputFinished = true
+    }
+
+    /// Every sentence of the turn has been handed to the speech client (hold mode's cue that the clip
+    /// starts it is waiting for are all that can still come).
+    public func markSpeechQueued() {
+        lock.lock(); defer { lock.unlock() }
+        speechQueued = true
+    }
+
+    public var isSpeechQueued: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return speechQueued
     }
 
     /// Barge-in or a new press: drops what waits and ignores later marks.

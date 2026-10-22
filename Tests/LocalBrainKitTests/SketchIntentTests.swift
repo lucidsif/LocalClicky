@@ -51,4 +51,46 @@ final class SketchIntentTests: XCTestCase {
             XCTAssertFalse(ClearMarksIntent.wants(words), words)
         }
     }
+
+    // MARK: step sketches: the words
+
+    func testDiagramAndIllustrateStartAFreeformSketchLikeDrawAndSketch() {
+        let cases: [(String, SketchFigure)] = [
+            ("diagram my morning routine", .freeform("my morning routine")),
+            ("illustrate how a heart pumps blood", .freeform("heart pumps blood")),
+            ("can you diagram the water cycle", .freeform("water cycle")),
+            ("please illustrate a flowchart", .freeform("flowchart")),
+            ("draw a diagram of the heart", .freeform("diagram of the heart")),
+            ("sketch a house", .freeform("house")),
+            ("draw a house", .freeform("house")),
+        ]
+        for (words, figure) in cases { XCTAssertEqual(SketchIntent.figure(words), figure, words) }
+    }
+
+    func testSketchOutHowToStripsTheFillerFromThePhrase() {
+        let cases: [(String, SketchFigure)] = [
+            ("sketch out how to do parallel parking", .freeform("parallel parking")),
+            ("Sketch out how to do parallel parking for me", .freeform("parallel parking")),
+            ("sketch me how to tie a tie", .freeform("tie a tie")),
+            ("sketch how do i parallel park", .freeform("parallel park")),
+            ("draw how to make a paper plane", .freeform("make a paper plane")),
+            ("diagram how to change a tyre", .freeform("change a tyre")),
+            ("sketch out a star", .star),
+            ("sketch out the water cycle", .freeform("water cycle")),
+        ]
+        for (words, figure) in cases { XCTAssertEqual(SketchIntent.figure(words), figure, words) }
+    }
+
+    func testTemplatesAndTheNonDrawingIdiomsStayWhatTheyWere() {
+        XCTAssertEqual(SketchIntent.figure("draw tic tac toe"), .ticTacToe)
+        XCTAssertEqual(SketchIntent.figure("draw a smiley face"), .smiley)
+        for words in ["draw up a contract", "draw conclusions", "draw attention to it", "draw attention to the error",
+                      "how do i parallel park", "show me how to parallel park", "show me how to reset my password",
+                      "show me how to box", "show me how to circle", "how to tie a tie",
+                      "the diagram of the heart shows four chambers", "what does this diagram mean",
+                      "that illustrates the point", "i like this diagram", "can you explain the diagram",
+                      "illustrate", "diagram", "sketch out"] {
+            XCTAssertNil(SketchIntent.figure(words), words)
+        }
+    }
 }

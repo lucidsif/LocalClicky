@@ -176,9 +176,14 @@ scripts/release.sh            # build + DMG + publish the GitHub Release (mainta
   loud. Say the moves to get them drawn (*"with an x in the center and an o in the top
   left"*, *"x top right and o bottom left"*); *"a game in progress"* or *"with some
   moves"* brings back the old demo board. It also draws a box, line, arrow, circle,
-  triangle, star, smiley, cross or check mark (*"draw a smiley face"*); anything else
-  (*"draw a house"*) is drawn by the grounding model, at most eight strokes. Besides
-  draw, sketch and doodle, the verbs put, place, make, show me, give me, add and
+  triangle, star, smiley, cross or check mark (*"draw a smiley face"*); anything else is
+  drawn by the grounding model as a sketch in steps: *"draw a house"* is one step, and
+  *"sketch out how to do parallel parking"*, *"diagram my morning routine"* or
+  *"illustrate how a heart pumps blood"* take up to six, each one short sentence spoken
+  while its own marks appear (step 1 is spoken and drawn while the model is still writing step 2), at most 24 marks in all, with short labels (up to four
+  words) next to the parts that need a name. Without a drawing word, *"how do i parallel
+  park"* and *"show me how to reset my password"* stay ordinary questions. Besides
+  draw, sketch, doodle, diagram and illustrate, the verbs put, place, make, show me, give me, add and
   create work when what follows is just one of those figures, with at most a board word,
   a placement, a size or a move (*"put a tic tac toe on the bottom left of my screen"*);
   *"make a note"*, *"add a reminder"*, *"show me the box score"* and *"show me the star
@@ -188,15 +193,28 @@ scripts/release.sh            # build + DMG + publish the GitHub Release (mainta
   lower and centre/center accepted) and small or big, kept fully on screen, and the
   spoken sentence names the real place ("in the bottom left of your screen"). Placement
   and size apply to the app's own figures only; a freeform drawing stays in the middle.
-  The figure stays 10 seconds after it finishes speaking. Say *"clear that"*, *"clear
+  The figure stays 20 seconds after it finishes speaking. Say *"clear that"*, *"clear
   the tic tac toe"* (any spelling speech to text gives it: *"tictac"*, *"tic-tac-toe"*),
   *"clear the board"* or *"erase the star"* (any figure name) to take it down, or press
-  the keys again. A clear after the 10 seconds have passed says *"nothing is drawn right
+  the keys again. A clear after the 20 seconds have passed says *"nothing is drawn right
   now."* and does not turn into a chat question. A drawing turn is recorded in the
   conversation as a short note such as "(drew a star)", never as its spoken sentence,
   so a later chat turn cannot recite a drawing that is gone. Words that point at
   something on the screen (*"draw a box around the error"*, *"circle the save button"*)
   still mark that thing instead.
+- **Keep a sketch and grow it** (drawing on): say *"keep it"*, *"keep that"*, *"pin it"*, *"leave it
+  on screen"* or *"don't clear it"* within the 20 seconds, or put it in the request (*"sketch and keep
+  how to parallel park"*, *"draw a house and keep it"*), and the sketch stays until you say *"clear"*
+  (a key press does not clear it; quitting the app does; it is never saved). With a sketch kept,
+  *"add the curb"*, *"label the car"*, *"show the next step"* or *"draw the stop line too"* sends the
+  kept marks to the model as data and draws only what is new over them (up to six steps and 24 marks
+  each time), *"undo that"* or *"undo the last part"* takes the last addition away (the first sketch
+  is cleared), and *"describe the sketch"* or *"what did you draw"* reads the steps back from the
+  record with no model. The kept marks are in their own click-through window, built to stay out of
+  screen sharing and out of the screenshots the model sees (see docs/ARCHITECTURE.md), with a small
+  pill under the sketch that reads *"Kept. Say clear to remove."* (it goes with the sketch and is
+  not read out; VoiceOver already hears the spoken confirmation). With no sketch kept,
+  these words do what they always did, and *"keep it"* says *"nothing is drawn right now."*
 - **Get an answer as text** beside the cursor: *"give me Martin Luther King's
   birthday in text"*, *"give text."* — a tight, honest answer in the blue bubble.
 - **Look something up online** (the one opt-in internet feature): *"what's the
@@ -217,8 +235,9 @@ about whatever you're doing — and that's the whole "onboarding." No video, no 
 TEMP, removed at project end. While the flag file `~/.clicky-gateway/debug.on` exists
 (the same flag the gateway's logger uses, so `clicky-gateway debug off` turns both
 off), the app appends one JSON line per event to `~/.clicky-gateway/debug-app-turns.jsonl`
-(mode 0600): sketch template turns (transcript, route, figure, anchor, size, board,
-spoken sentence), clear turns (transcript, cleared yes or no) and pointing turns
+(mode 0600): sketch turns (`sketch`: route, the figure phrase, steps, tags, labels, kept, groups,
+extend yes or no, dropped tags, ms; template figures add anchor, size and board; no sentence or
+label text and no transcript), clear turns (transcript, cleared yes or no) and pointing turns
 (transcript, the object substituted for a follow-up, window line yes or no, the model's
 point in screenshot pixels, its label, snap kind window, ax or none, the snapped point
 in screen points, the matched element title or description, or window title; never a text field's value). It never logs an image

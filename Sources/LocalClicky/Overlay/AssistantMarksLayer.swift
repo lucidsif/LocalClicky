@@ -64,6 +64,13 @@ struct AssistantMarksLayer: View {
                         }
                     }
                 }
+                // A sketch's labels, over every stroke. They share the mark's draw-on (their opacity is its
+                // progress, so with Reduce Motion they are there at once) and the group's fade.
+                ForEach(mine) { mark in
+                    if let label = mark.label {
+                        SketchLabelView(label: label).opacity(mark.progress)
+                    }
+                }
             }
             .compositingGroup()
             .opacity(marks.groupOpacity)
@@ -78,5 +85,24 @@ struct AssistantMarksLayer: View {
                            lineCap: .round,
                            lineJoin: .round,
                            dash: dashed ? style.assistantDashPattern.map { CGFloat($0) } : [])
+    }
+}
+
+/// A label: white text on a dark translucent backing, a contrast of at least 4.5:1 over any background
+/// (SketchLabelStyle.worstCaseContrast).
+struct SketchLabelView: View {
+    let label: MarkLabel
+
+    var body: some View {
+        Text(label.text)
+            .font(.system(size: SketchLabelStyle.fontSize, weight: .semibold))
+            .foregroundColor(.white)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, SketchLabelPlacement.backingPadding / 2)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.black.opacity(SketchLabelStyle.backingOpacity)))
+            .position(label.position)
     }
 }

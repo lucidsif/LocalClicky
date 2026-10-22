@@ -120,6 +120,16 @@ final class CompanionManager: ObservableObject {
     /// The assistant's own marks (circle, arrow, highlight...) drawn on the
     /// overlays while it speaks. Only filled when the drawing setting is on.
     let assistantMarks = AssistantMarksModel()
+    /// The marks of a kept sketch, in their own windows (KeptSketchWindows.swift). A key press clears
+    /// `assistantMarks` and leaves these; "clear" clears both.
+    let keptMarks = AssistantMarksModel()
+    private let keptSketchWindows = KeptSketchWindowManager()
+    /// The record behind the sketch on the screen (or just taken off it by a key press), and the screen it
+    /// was drawn for. The marks are only a drawing of it (SketchCanvas). Not saved to disk.
+    private var sketchCanvas = SketchCanvas()
+    private var sketchMapping: ScreenMapping?
+    /// Forgets an unkept sketch once its hold and fade have ended, so "keep it" after that says nothing is drawn.
+    private var sketchExpiryTask: Task<Void, Never>?
 
     // MARK: - Local inference
 
@@ -1030,6 +1040,10 @@ final class CompanionManager: ObservableObject {
             cancelPendingMarks()
             marksClearTask?.cancel()
             marksClearTask = nil
+            // The press takes an unkept sketch off the screen but not its record: if the words are "keep it", it
+            // is redrawn; any other turn forgets it (discardUnkeptSketch). A kept sketch is untouched.
+            sketchExpiryTask?.cancel()
+            sketchExpiryTask = nil
             assistantMarks.clearNow()
             clearDetectedElementLocation()
             dismissSideText()
@@ -1273,11 +1287,15 @@ final class CompanionManager: ObservableObject {
                         customSites: ModelPreferences.customSites
                     ),
                     hasUsableInk: inkPackage != nil,
-                    drawingEnabled: drawingEnabled
+                    drawingEnabled: drawingEnabled,
+                    sketchCanvas: sketchCanvas.status
                 )
                 previousTurnWasPointing = (route == .screenPoint || route == .screenClick)
                 let drawnAtPress = marksShownAtPress
                 marksShownAtPress = false
+                // An unkept sketch a key press took off the screen is forgotten by any turn that is not about it.
+                if !Self.sketchRoutes.contains(route) { discardUnkeptSketch() }
+                let sketchTurnStart = Date()
 
                 timer?.setRoute(String(describing: route))
 
@@ -1344,6 +1362,11 @@ final class CompanionManager: ObservableObject {
                     settleAfterAction()
                     return
                 }
+                if route == .keepSketch || route == .undoSketch || route == .describeSketch {
+                    await handleSketchCanvasCommand(route, startedAt: sketchTurnStart)
+                    settleAfterAction()
+                    return
+                }
 
                 // A click turn grounds the element exactly like a pointing turn
                 // (same grounding model + tag); it just also clicks at the end.
@@ -1351,7 +1374,19 @@ final class CompanionManager: ObservableObject {
                 let wantsDrawing = (route == .screenDraw)
                 // A sketch marks nothing: a template figure is composed by the app, a
                 // freeform one is drawn by the grounding model (see Sketch.swift).
-                let wantsSketch = (route == .screenSketch)
+                // An extend is a freeform sketch turn too: the same reply format, drawn over the kept sketch.
+                let wantsExtend = (route == .extendSketch)
+                let wantsSketch = (route == .screenSketch || wantsExtend)
+                let sketchRequest = (wantsSketch && !wantsExtend) ? SketchIntent.parse(transcript) : nil
+                // Kept from the start: asked for in the request, or extending a kept sketch.
+                let sketchKeptFromStart = wantsExtend || sketchRequest?.keep == true
+                if wantsExtend, !sketchCanvas.beginExtend() {
+                    await speakOnly(SketchLimits.nothingDrawnSentence)
+                    settleAfterAction()
+                    return
+                }
+                // However the turn ends, an extend that did not record a group is over.
+                defer { sketchCanvas.finishExtend(with: nil) }
                 let useScreen = (route == .screen || route == .screenPoint || route == .screenClick || wantsDrawing || wantsSketch)
                 let wantsPointing = (route == .screenPoint || route == .screenClick)
                 // A drawing turn grounds like a pointing turn: the model's
@@ -1399,8 +1434,14 @@ final class CompanionManager: ObservableObject {
                 if let capture = screenCapture {
                     cursorScreenCapture = capture
                     // A figure with a template is drawn and spoken by the app, with no model call.
-                    if wantsSketch, let plan = sketchPlan(for: transcript, in: capture) {
-                        await showSketch(plan, transcript: transcript, route: route, in: capture, timer: timer)
+                    if wantsSketch, !wantsExtend, let plan = sketchPlan(for: transcript, in: capture) {
+                        await showSketch(plan, transcript: transcript, route: route, in: capture, timer: timer,
+                                         startedAt: sketchTurnStart)
+                        settleAfterAction()
+                        return
+                    }
+                    if wantsExtend, !(SketchLimits.freeformEnabled && LocalModels.isLikelyGroundingCapable(resolvedGroundingModelName())) {
+                        await speakOnly(SketchLimits.cannotExtendSentence)
                         settleAfterAction()
                         return
                     }
@@ -1436,8 +1477,8 @@ final class CompanionManager: ObservableObject {
                         model = pointingModel
                     } else if wantsSketch {
                         // Freeform sketch (sketchPlan returned nil, so the grounding
-                        // model can draw): its own prompt, in the gateway's 0 to 1000 frame.
-                        systemPrompt = LocalPrompts.screenSketchResponse
+                        // model can draw): its own step prompt, in the gateway's 0 to 1000 frame.
+                        systemPrompt = wantsExtend ? SketchPrompts.extend : SketchPrompts.stepSketch
                         model = resolvedGroundingModelName()
                     } else if wantsDrawing {
                         // Drawing turn: the grounding model with the shape
@@ -1507,7 +1548,10 @@ final class CompanionManager: ObservableObject {
                 }
                 // The ink text rides after the user's words, so every system
                 // prompt but the ink describe turn's stays as it is with no ink.
-                var userText = groundingTranscript
+                // An extend quotes the kept sketch as data, then the request (SketchPrompts.extendRequest).
+                var userText = wantsExtend
+                    ? SketchPrompts.extendRequest(keptGroups: sketchCanvas.groups.map(\.tags), request: transcript)
+                    : groundingTranscript
                 // A window or app is not the control the point prompt talks about. A
                 // point-then-draw turn sends the point prompt too, so it gets the line.
                 let windowLine = PointingTarget.wantsWindowLine(transcript: groundingTranscript, wantsPointing: wantsPointing,
@@ -1557,7 +1601,7 @@ final class CompanionManager: ObservableObject {
                     if wantsPointing || pointThenDrawKind != nil { return 130 }
                     // Up to three tag-first beat lines: tags are token-heavy.
                     if wantsDrawing { return 260 }
-                    // Up to SketchLimits.maxTags tags and one sentence.
+                    // Up to SketchLimits.maxSteps steps and maxStepTags tags (the number is justified there).
                     if wantsSketch { return SketchLimits.freeformAnswerMaxTokens }
                     if cursorScreenCapture == nil { return 420 }
                     return 320
@@ -1576,15 +1620,44 @@ final class CompanionManager: ObservableObject {
                 let shapeDetector = StreamingShapeDetector()
                 // Marks wait for their sentence to be spoken: a tag binds to the
                 // next sentence queued after it, and shows when that clip starts.
+                // A step sketch holds each step's marks for its own sentence (hold mode), because it closes a
+                // step's marks as soon as the step is complete, long before the later steps are spoken.
                 let scheduler: SpeechMarkSchedulerBox<InkDrawing>? = drawingCapture == nil ? nil : {
-                    let box = SpeechMarkSchedulerBox<InkDrawing>(firstClipID: nextClipIDBase)
+                    let box = SpeechMarkSchedulerBox<InkDrawing>(firstClipID: nextClipIDBase, holdsBoundMarks: wantsSketch)
                     nextClipIDBase += 100_000
                     return box
                 }()
                 defer { scheduler?.finishInput() }
                 if let scheduler, let capture = drawingCapture {
-                    startMarkDriver(scheduler, in: capture, timer: timer)
-                    if wantsSketch { marksHoldSeconds = SketchTiming.holdSeconds }
+                    // An extend draws on the screen the kept sketch was drawn for.
+                    startMarkDriver(scheduler, mapping: wantsExtend ? (sketchMapping ?? screenMapping(for: capture)) : screenMapping(for: capture),
+                                    timer: timer, showsLabels: wantsSketch, toKeptLayer: sketchKeptFromStart)
+                    if wantsSketch, !sketchKeptFromStart { marksHoldSeconds = SketchTiming.holdSeconds }
+                }
+
+                // A step sketch streams: each step is closed and queued the moment it is complete (the next
+                // [STEP] marker has fully arrived), so step 1 is spoken and drawn while the model writes step 2.
+                // Its marks close first, then its sentence is queued, so they bind to it and (hold mode) show when
+                // that clip starts, never before. The canvas record is written when the stream ends.
+                let sketchStream = SketchStepStream()
+                let sketchPixels = drawingCapture.map { (width: $0.screenshotWidthInPixels, height: $0.screenshotHeightInPixels) }
+                let extendPixels = (width: sketchCanvas.imageWidth, height: sketchCanvas.imageHeight)
+                let sketchFirstStep = OneShotFlag()
+                let emitSketchStep: @Sendable (SketchStep) -> Void = { [weak self] step in
+                    guard let scheduler, let sketchPixels else { return }
+                    // The previous kept sketch goes when the new one's first step starts, not when the reply ends.
+                    if !wantsExtend, sketchFirstStep.trip() {
+                        Task { @MainActor [weak self] in self?.clearKeptLayer() }
+                    }
+                    let shapes = wantsExtend
+                        ? SketchCanvas.pixelTags(from: SketchCanvas.gridTags(from: step.shapes, imageWidth: sketchPixels.width,
+                                                                              imageHeight: sketchPixels.height),
+                                                 imageWidth: extendPixels.width, imageHeight: extendPixels.height)
+                        : step.shapes
+                    for shape in shapes { scheduler.markClosed(.shape(shape)) }
+                    // A step with no sentence queues none: its marks bind to the next step's sentence.
+                    guard !step.sentence.isEmpty else { return }
+                    sentenceContinuation.yield((clipID: scheduler.sentenceQueued(), text: step.sentence))
                 }
 
                 timer?.mark(.requestSent)
@@ -1601,9 +1674,12 @@ final class CompanionManager: ObservableObject {
                         // Tags first, then sentences: a tag-first beat line
                         // delivered in one chunk must close its mark before its
                         // sentence is queued, so the mark binds to that sentence.
-                        if let scheduler, drawFromPointKind == nil {
-                            for drawing in shapeDetector.feed(accumulated: accumulated)
-                            where !wantsSketch || SketchLimits.admits(drawing, alreadyClosed: scheduler.closedCount) {
+                        // A step sketch is read step by step (SketchStepStream, below).
+                        if wantsSketch {
+                            for step in sketchStream.feed(accumulated: accumulated) { emitSketchStep(step) }
+                        }
+                        if let scheduler, drawFromPointKind == nil, !wantsSketch {
+                            for drawing in shapeDetector.feed(accumulated: accumulated) {
                                 scheduler.markClosed(drawing)
                             }
                         }
@@ -1664,18 +1740,23 @@ final class CompanionManager: ObservableObject {
 
                 // A tag that closed in the very last chunk. The detector never
                 // returns a tag twice, so this only adds what the stream missed.
+                var sketchReply: SketchReply?
                 if let scheduler, !Task.isCancelled {
-                    for drawing in drawFromPointKind == nil ? shapeDetector.feed(accumulated: result.text) : []
-                    where !wantsSketch || SketchLimits.admits(drawing, alreadyClosed: scheduler.closedCount) {
+                    for drawing in drawFromPointKind == nil && !wantsSketch ? shapeDetector.feed(accumulated: result.text) : [] {
                         scheduler.markClosed(drawing)
                     }
-                    scheduler.finishInput()
-                    timer?.setMarks(scheduler.closedCount)
-                    // A sketch speaks its own words once, or says it drew nothing or has no sentence
-                    // (SketchLimits.spokenSentence); it is spoken as one sentence at the end.
+                    // A step sketch: each step's marks close, then its sentence is queued, so the marks bind to
+                    // it and (hold mode) show when that sentence starts. A reply with no valid tag says so.
                     if wantsSketch {
-                        drawnFromPointSentence = SketchLimits.spokenSentence(in: result.text, closedTags: scheduler.closedCount)
+                        // The open step is complete now. The reply read whole is the same steps the stream gave.
+                        for step in sketchStream.finish(accumulated: result.text) { emitSketchStep(step) }
+                        let reply = SketchStepParser.parse(result.text)
+                        sketchReply = reply
+                        if reply.isEmpty { drawnFromPointSentence = SketchLimits.failureSentence }
                     }
+                    // A step sketch closes its marks below, with the sentences, and finishes its input there.
+                    if sketchReply == nil || sketchReply?.isEmpty == true { scheduler.finishInput() }
+                    timer?.setMarks(sketchReply?.tagCount ?? scheduler.closedCount)
                 }
 
                 guard !Task.isCancelled else {
@@ -1687,6 +1768,7 @@ final class CompanionManager: ObservableObject {
                 let pointing = PointingTagParser.parse(from: result.text)
                 // A drawing turn's words carry SHAPE and HIGHLIGHT tags too; none goes into the history.
                 let spokenText = drawnFromPointSentence
+                    ?? (sketchReply.map { $0.steps.map(\.sentence).filter { !$0.isEmpty }.joined(separator: " ") })
                     ?? (drawingCapture != nil ? ShapeTagParser.parse(from: result.text).spokenText : pointing.spokenText)
                 if pointing.hasPoint {
                     timer?.mark(.tagParsed)
@@ -1699,7 +1781,30 @@ final class CompanionManager: ObservableObject {
                     speakable: SpokenTextSegmenter.speakablePrefix(result.text))
                 if let drawnFromPointSentence {
                     sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: drawnFromPointSentence))
-                } else if !remainder.isEmpty {
+                } else if let scheduler, let sketchReply, let capture = cursorScreenCapture {
+                    // The record first: the marks below are a drawing of it. The reply's tags are in this
+                    // capture's pixels; an extend draws in the pixels the kept sketch was drawn at.
+                    let group = SketchCanvas.group(steps: sketchReply.steps.map(\.sentence),
+                                                   pixelTags: sketchReply.steps.flatMap(\.shapes),
+                                                   imageWidth: capture.screenshotWidthInPixels,
+                                                   imageHeight: capture.screenshotHeightInPixels)
+                    if wantsExtend {
+                        sketchCanvas.finishExtend(with: group)
+                    } else {
+                        // (The old kept layer was cleared when the first step started; this turn's own kept marks stay.)
+                        sketchCanvas.begin(group, kept: sketchKeptFromStart, imageWidth: capture.screenshotWidthInPixels,
+                                           imageHeight: capture.screenshotHeightInPixels)
+                        sketchMapping = screenMapping(for: capture)
+                    }
+                    logSketchEvent(route: route, figure: sketchRequest.map { String(describing: $0.figure) },
+                                   steps: sketchReply.steps.count, tags: sketchReply.tagCount, labels: sketchReply.labelCount,
+                                   dropped: sketchReply.droppedTags, extend: wantsExtend, startedAt: sketchTurnStart)
+                    // Tags but not one sentence: the marks are all closed and unbound, so one sentence says it drew.
+                    if SketchStepParser.needsDrawnSentence(sketchReply) {
+                        sentenceContinuation.yield((clipID: scheduler.sentenceQueued(), text: SketchLimits.drawnSentence))
+                    }
+                    scheduler.finishInput()
+                } else if !remainder.isEmpty && !wantsSketch {
                     sentenceContinuation.yield((clipID: scheduler?.sentenceQueued(), text: remainder))
                 }
                 sentenceContinuation.finish()
@@ -1739,7 +1844,9 @@ final class CompanionManager: ObservableObject {
 
                 // A sketch records a neutral note, not its sentence, so a later chat turn has nothing to recite
                 // for a drawing that is gone (or never was). lastSpokenAnswer below keeps the real sentence.
-                let historyText = wantsSketch
+                let historyText = wantsExtend
+                    ? ((scheduler?.closedCount ?? 0) > 0 ? "(added to the sketch)" : "(could not add to the sketch)")
+                    : wantsSketch
                     ? SketchHistory.note(for: SketchIntent.figure(transcript) ?? .freeform("something"),
                                          drew: (scheduler?.closedCount ?? 0) > 0)
                     : spokenText
@@ -1760,6 +1867,8 @@ final class CompanionManager: ObservableObject {
                 // Wait until every sentence has been synthesized and queued, then
                 // reflect that we're speaking.
                 await speakingTask.value
+                // Every sentence is with the speech client now: a step sketch's held marks wait only for its clips.
+                scheduler?.markSpeechQueued()
                 // Let the first mark reach the screen before the turn record is
                 // written, so first_mark is the real display time. Bounded: a
                 // mark is never held longer than SpeechMarkTiming.startTimeout.
@@ -1835,13 +1944,27 @@ final class CompanionManager: ObservableObject {
 
     /// Draws a template sketch and speaks its one sentence. Every mark closes before the
     /// sentence is queued, so all of them show when that clip starts (SpeechMarkScheduler);
-    /// the figure then holds SketchTiming.holdSeconds after the speech.
+    /// the figure then holds SketchTiming.holdSeconds after the speech, or stays when the words kept it.
     private func showSketch(_ plan: SketchPlan, transcript: String, route: ConversationRoute,
-                            in capture: CompanionScreenCapture, timer: TurnTimer?) async {
+                            in capture: CompanionScreenCapture, timer: TurnTimer?, startedAt: Date) async {
         let scheduler = SpeechMarkSchedulerBox<InkDrawing>(firstClipID: nextClipIDBase)
         nextClipIDBase += 100_000
-        startMarkDriver(scheduler, in: capture, timer: timer)
-        marksHoldSeconds = SketchTiming.holdSeconds
+        let request = SketchIntent.parse(transcript)
+        let keep = request?.keep == true
+        // The record first (a template sketch is a sketch: "keep it" and "describe the sketch" work on it).
+        if !plan.drawings.isEmpty {
+            clearKeptLayer()
+            let tags = plan.drawings.compactMap { drawing -> ShapeTag? in
+                if case .shape(let tag) = drawing { return tag } else { return nil }
+            }
+            sketchCanvas.begin(SketchCanvas.group(steps: [plan.spokenSentence], pixelTags: tags,
+                                                  imageWidth: capture.screenshotWidthInPixels,
+                                                  imageHeight: capture.screenshotHeightInPixels),
+                               kept: keep, imageWidth: capture.screenshotWidthInPixels, imageHeight: capture.screenshotHeightInPixels)
+            sketchMapping = screenMapping(for: capture)
+        }
+        startMarkDriver(scheduler, mapping: screenMapping(for: capture), timer: timer, showsLabels: false, toKeptLayer: keep)
+        if !keep { marksHoldSeconds = SketchTiming.holdSeconds }
         for drawing in plan.drawings { scheduler.markClosed(drawing) }
         let clipID = scheduler.sentenceQueued()
         scheduler.finishInput()
@@ -1849,7 +1972,6 @@ final class CompanionManager: ObservableObject {
 
         // The history holds a neutral note, not the sentence: a later chat turn recites a sentence it finds there
         // for a drawing that is gone. lastSpokenAnswer keeps the real sentence for "copy your answer".
-        let request = SketchIntent.parse(transcript)
         let note = plan.drawings.isEmpty ? "(could not draw that)" : SketchHistory.note(for: request?.figure ?? .freeform("something"))
         conversationHistory.append((userTranscript: transcript, assistantResponse: note))
         if conversationHistory.count > 10 {
@@ -1859,31 +1981,148 @@ final class CompanionManager: ObservableObject {
         previousTurnUsedScreen = true
 
         // TEMP debug logger (remove at project end)
-        TempAppDebugLog.append("sketch", ["transcript": transcript, "route": String(describing: route),
-                                          "figure": request.map { String(describing: $0.figure) } ?? "none",
-                                          "anchor": request?.anchor.name ?? "none",
-                                          "size": request.map { String(describing: $0.size) } ?? "none",
-                                          "board": request?.board ?? "", "spoken": plan.spokenSentence])
+        logSketchEvent(route: route, figure: request.map { String(describing: $0.figure) },
+                       steps: 1, tags: plan.drawings.count, labels: 0, dropped: 0, extend: false, startedAt: startedAt,
+                       extra: ["anchor": request?.anchor.name ?? "none", "size": request.map { String(describing: $0.size) } ?? "none",
+                               "board": request?.board ?? ""])
 
         voiceState = .responding
         do { try await speechSynthesizer.speakText(plan.spokenSentence, clipID: clipID) }
         catch { print("⚠️ TTS error during sketch: \(error)") }
     }
 
+    // MARK: - The sketch record (SketchCanvas): keep, undo, describe, clear
+
+    /// The routes that are about the sketch. Any other turn forgets an unkept sketch a key press took off.
+    private static let sketchRoutes: Set<ConversationRoute> = [.screenSketch, .keepSketch, .undoSketch, .describeSketch,
+                                                                .extendSketch, .clearMarks]
+
+    /// Speaks one sentence and nothing else.
+    private func speakOnly(_ sentence: String) async {
+        voiceState = .responding
+        do { try await speechSynthesizer.speakText(sentence) }
+        catch { print("⚠️ TTS error: \(error)") }
+    }
+
+    /// The kept marks and their windows go; the record stays (the caller decides about it).
+    private func clearKeptLayer() {
+        keptMarks.clearNow()
+        keptSketchWindows.hide()
+    }
+
+    /// Everything about the sketch is gone: kept marks, record, pending fade.
+    private func clearSketchCanvas() {
+        sketchExpiryTask?.cancel()
+        sketchExpiryTask = nil
+        clearKeptLayer()
+        sketchCanvas.clear()
+        sketchMapping = nil
+    }
+
+    /// An unkept sketch is over (a key press took it off the screen and the turn is about something else,
+    /// or its fade ended). A kept one stays.
+    private func discardUnkeptSketch() {
+        guard !sketchCanvas.kept else { return }
+        sketchExpiryTask?.cancel()
+        sketchExpiryTask = nil
+        sketchCanvas.clear()
+        sketchMapping = nil
+    }
+
+    /// The unkept sketch fades `delay` seconds from now; its record goes with it.
+    private func scheduleSketchExpiry(after delay: Double) {
+        guard !sketchCanvas.isEmpty, !sketchCanvas.kept else { return }
+        sketchExpiryTask?.cancel()
+        sketchExpiryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.discardUnkeptSketch()
+        }
+    }
+
+    /// Draws the whole record into the kept layer at once (no speech, no scheduler).
+    private func redrawKeptLayer() {
+        keptMarks.clearNow()
+        guard let mapping = sketchMapping, !sketchCanvas.isEmpty else { keptSketchWindows.hide(); return }
+        let reduceMotion = InkDisplayOptions.current().reduceMotion
+        for index in sketchCanvas.groups.indices {
+            for drawing in sketchCanvas.drawings(inGroup: index) {
+                addMark(drawing, mapping: mapping, showsLabels: true, toKeptLayer: true, reduceMotion: reduceMotion)
+            }
+        }
+    }
+
+    /// "keep it", "undo that", "describe the sketch": answered from the record with no model call.
+    private func handleSketchCanvasCommand(_ route: ConversationRoute, startedAt: Date) async {
+        let sentence: String
+        switch route {
+        case .keepSketch:
+            if sketchCanvas.isEmpty {
+                sentence = SketchLimits.nothingDrawnSentence
+            } else if sketchCanvas.kept {
+                sentence = "it is already kept. say clear to remove it."
+            } else {
+                // The key press took the sketch off the screen; the kept copy is drawn from the record.
+                sketchCanvas.keep()
+                sketchExpiryTask?.cancel()
+                sketchExpiryTask = nil
+                marksClearTask?.cancel()
+                marksClearTask = nil
+                cancelPendingMarks()
+                assistantMarks.clearNow()
+                redrawKeptLayer()
+                sentence = "kept. say clear to remove it."
+            }
+        case .undoSketch:
+            switch sketchCanvas.undo() {
+            case .nothing:
+                sentence = SketchLimits.nothingDrawnSentence
+            case .cleared:
+                clearSketchCanvas()
+                sentence = "cleared."
+            case .removedLast:
+                redrawKeptLayer()
+                sentence = "undone."
+            }
+        default:
+            sentence = sketchCanvas.describe() ?? SketchLimits.nothingDrawnSentence
+        }
+        // TEMP debug logger (remove at project end)
+        logSketchEvent(route: route, figure: nil, steps: sketchCanvas.groups.flatMap(\.steps).count,
+                       tags: sketchCanvas.allTags.count, labels: sketchCanvas.allTags.filter { $0.label != nil }.count,
+                       dropped: 0, extend: false, startedAt: startedAt)
+        await speakOnly(sentence)
+    }
+
+    /// TEMP debug logger (remove at project end): one `sketch` line per sketch turn. The figure phrase is the
+    /// only words from the request; no sentence or label text is logged.
+    private func logSketchEvent(route: ConversationRoute, figure: String?, steps: Int, tags: Int, labels: Int,
+                                dropped: Int, extend: Bool, startedAt: Date, extra: [String: Any] = [:]) {
+        var fields: [String: Any] = ["route": String(describing: route), "figure": figure ?? "none", "steps": steps,
+                                     "tags": tags, "labels": labels, "kept": sketchCanvas.kept,
+                                     "groups": sketchCanvas.groups.count, "extend": extend, "dropped": dropped,
+                                     "ms": Int(Date().timeIntervalSince(startedAt) * 1000)]
+        for (key, value) in extra { fields[key] = value }
+        TempAppDebugLog.append("sketch", fields)
+    }
+
     /// "clear that": takes down what the assistant drew and says so. A key press already
     /// clears the marks, so this is the spoken confirmation of that. `drawnAtPress` says
-    /// there were marks when the key went down. With nothing drawn (the sketch's 10 s hold
-    /// already ended) it says so, and the turn does not fall through to chat.
+    /// there were marks when the key went down. With nothing drawn (the sketch's 20 s hold
+    /// already ended) it says so, and the turn does not fall through to chat. A kept sketch
+    /// goes too: this is how it is removed.
     private func handleClearMarks(transcript: String, drawnAtPress: Bool) async {
         let cleared = drawnAtPress || assistantMarks.isShowing || markScheduler?.hasPending == true
+            || keptMarks.isShowing || !sketchCanvas.isEmpty
         marksClearTask?.cancel()
         marksClearTask = nil
         cancelPendingMarks()
         assistantMarks.clearNow()
+        clearSketchCanvas()
         // TEMP debug logger (remove at project end)
         TempAppDebugLog.append("clear", ["transcript": transcript, "cleared": cleared])
         voiceState = .responding
-        do { try await speechSynthesizer.speakText(cleared ? "cleared." : "nothing is drawn right now.") }
+        do { try await speechSynthesizer.speakText(cleared ? "cleared." : SketchLimits.nothingDrawnSentence) }
         catch { print("⚠️ TTS error during clear: \(error)") }
     }
 
@@ -2322,17 +2561,32 @@ final class CompanionManager: ObservableObject {
     /// and hands due marks to the overlay, and ends when nothing is waiting and
     /// the stream is done, or at a barge-in (`cancelPendingMarks`).
     private func startMarkDriver(_ scheduler: SpeechMarkSchedulerBox<InkDrawing>,
-                                 in capture: CompanionScreenCapture,
-                                 timer: TurnTimer?) {
+                                 mapping: ScreenMapping,
+                                 timer: TurnTimer?,
+                                 showsLabels: Bool = false,
+                                 toKeptLayer: Bool = false) {
         cancelPendingMarks()
         markScheduler = scheduler
         speechSynthesizer.onClipStart = { [weak scheduler] start in
             scheduler?.clipStarted(id: start.id, audibleIn: start.audibleIn)
         }
         markDriverTask = Task { [weak self] in
+            // Hold mode (a step sketch): the marks wait for their clips. If every sentence has been handed to
+            // the speech client and nothing has played for SketchTiming.flushGraceSeconds (speech failed, or a
+            // clip never announced itself), the wait ends and what is left shows.
+            var silentSince: Double?
             while !Task.isCancelled {
+                if scheduler.isHolding, scheduler.isSpeechQueued, scheduler.hasPending {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if self?.speechSynthesizer.isPlaying == true {
+                        silentSince = nil
+                    } else {
+                        silentSince = silentSince ?? now
+                        if now - (silentSince ?? now) >= SketchTiming.flushGraceSeconds { scheduler.flush() }
+                    }
+                }
                 let due = scheduler.release()
-                if !due.isEmpty { self?.showMarks(due, in: capture, timer: timer) }
+                if !due.isEmpty { self?.showMarks(due, mapping: mapping, timer: timer, showsLabels: showsLabels, toKeptLayer: toKeptLayer) }
                 if scheduler.isDone { break }
                 try? await Task.sleep(nanoseconds: 25_000_000)
             }
@@ -2370,21 +2624,37 @@ final class CompanionManager: ObservableObject {
         return mapping.displayLocalRect(forCGGlobalRect: frame, primaryScreenHeight: primaryHeight)
     }
 
-    /// Hands marks to the overlay of the display the screenshot was taken of.
-    /// first_mark is recorded here, at the moment of display.
-    private func showMarks(_ drawings: [InkDrawing], in capture: CompanionScreenCapture, timer: TurnTimer?) {
-        let mapping = ScreenMapping(displayFrame: capture.displayFrame,
-                                    displayWidthInPoints: capture.displayWidthInPoints,
-                                    displayHeightInPoints: capture.displayHeightInPoints,
-                                    screenshotWidthInPixels: capture.screenshotWidthInPixels,
-                                    screenshotHeightInPixels: capture.screenshotHeightInPixels)
+    /// Hands marks to the overlay of the display the screenshot was taken of, or to the kept layer for a kept
+    /// sketch. first_mark is recorded here, at the moment of display.
+    private func showMarks(_ drawings: [InkDrawing], mapping: ScreenMapping, timer: TurnTimer?,
+                           showsLabels: Bool = false, toKeptLayer: Bool = false) {
         let reduceMotion = InkDisplayOptions.current().reduceMotion
         for drawing in drawings {
-            let geometry = MarkGeometryBuilder.geometry(for: MarkGeometryBuilder.overlayDrawing(from: drawing, mapping: mapping))
-            guard geometry.passes.contains(where: { !$0.isEmpty }) else { continue }
-            timer?.mark(.firstMark)
-            assistantMarks.add(geometry: geometry, displayFrame: capture.displayFrame, reduceMotion: reduceMotion)
+            if addMark(drawing, mapping: mapping, showsLabels: showsLabels, toKeptLayer: toKeptLayer, reduceMotion: reduceMotion) {
+                timer?.mark(.firstMark)
+            }
         }
+    }
+
+    /// One mark onto the overlay's model or the kept one. False when it has nothing to stroke.
+    @discardableResult
+    private func addMark(_ drawing: InkDrawing, mapping: ScreenMapping, showsLabels: Bool, toKeptLayer: Bool,
+                         reduceMotion: Bool) -> Bool {
+        let overlayDrawing = MarkGeometryBuilder.overlayDrawing(from: drawing, mapping: mapping)
+        let geometry = MarkGeometryBuilder.geometry(for: overlayDrawing)
+        guard geometry.passes.contains(where: { !$0.isEmpty }) else { return false }
+        // Only a freeform sketch labels its shapes; a circle drawn at a button has no caption.
+        var label: MarkLabel?
+        if showsLabels, case .shape(let tag) = drawing {
+            label = SketchLabelPlacement.label(for: overlayDrawing, text: tag.label, bounds: mapping.displaySizeInPoints)
+        }
+        if toKeptLayer {
+            keptSketchWindows.show(marks: keptMarks, inkTrail: inkTrail)
+            keptMarks.add(geometry: geometry, displayFrame: mapping.displayFrame, reduceMotion: reduceMotion, label: label)
+        } else {
+            assistantMarks.add(geometry: geometry, displayFrame: mapping.displayFrame, reduceMotion: reduceMotion, label: label)
+        }
+        return true
     }
 
     /// Waits for the speech to finish, then starts the marks' hold and fade.
@@ -2403,6 +2673,8 @@ final class CompanionManager: ObservableObject {
             let hold = self.marksHoldSeconds ?? fade.hold
             self.marksHoldSeconds = nil
             self.assistantMarks.scheduleClear(hold: hold, fade: fade.fade)
+            // An unkept sketch's record goes with its marks; "keep it" until then redraws it.
+            self.scheduleSketchExpiry(after: hold + fade.fade + 0.5)
         }
     }
 
@@ -2547,4 +2819,17 @@ final class CompanionManager: ObservableObject {
         Task { try? await speechSynthesizer.speakText(utterance) }
     }
 
+}
+
+/// True once, for the first caller: "is this the first step of the stream".
+private final class OneShotFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tripped = false
+
+    func trip() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if tripped { return false }
+        tripped = true
+        return true
+    }
 }

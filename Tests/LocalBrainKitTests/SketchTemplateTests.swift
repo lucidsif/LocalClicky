@@ -127,35 +127,18 @@ final class SketchTemplateTests: XCTestCase {
         }
     }
 
-    func testFreeformSpeechIsTheModelsWordsOrAnHonestFallback() {
-        let tag = "[SHAPE:line:200,200;800,200]"
-        // Words after the tags are spoken, tags removed.
-        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + "\n" + tag + "\nhere is a line.", closedTags: 2), "here is a line.")
-        // Tags but no sentence: a sentence is still spoken.
-        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + "\n" + tag, closedTags: 2), SketchLimits.drawnSentence)
-        // A tag cut off by the token cap is dropped, not read out.
-        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + "\n[SHAPE:line:200,300;8", closedTags: 1), SketchLimits.drawnSentence)
-        XCTAssertEqual(SketchLimits.spokenSentence(in: tag + " here is a line.\n[SHAPE:line:200,300;8", closedTags: 1), "here is a line.")
-        // No valid tag: the failure sentence, whatever the model said.
-        XCTAssertEqual(SketchLimits.spokenSentence(in: "i cannot do that", closedTags: 0), SketchLimits.failureSentence)
+    func testTheSketchSentencesAreSpeakable() {
         XCTAssertEqual(SketchLimits.drawnSentence, SketchLimits.drawnSentence.lowercased())
         XCTAssertFalse(SketchLimits.drawnSentence.contains("\u{2014}"))
-    }
-
-    func testAFreeformSketchAdmitsShapesUpToTheCapAndNoHighlights() {
-        let shapeTag = ShapeTag(kind: .line, points: [CGPoint(x: 1, y: 1), CGPoint(x: 2, y: 2)], label: nil, screenNumber: nil)
-        let highlight = HighlightTag(rect: CGRect(x: 1, y: 1, width: 5, height: 5), label: nil, screenNumber: nil)
-        XCTAssertEqual(SketchLimits.maxTags, 8)
-        XCTAssertTrue(SketchLimits.admits(.shape(shapeTag), alreadyClosed: 0))
-        XCTAssertTrue(SketchLimits.admits(.shape(shapeTag), alreadyClosed: 7))
-        XCTAssertFalse(SketchLimits.admits(.shape(shapeTag), alreadyClosed: 8))
-        XCTAssertFalse(SketchLimits.admits(.highlight(highlight), alreadyClosed: 0))
-    }
-
-    func testTheSketchHoldIsTenSecondsAndTheSentencesAreSpeakable() {
-        XCTAssertEqual(SketchTiming.holdSeconds, 10)
         XCTAssertEqual(SketchLimits.failureSentence, "i could not draw that one.")
-        XCTAssertEqual(SketchLimits.freeformAnswerMaxTokens, 400)
+    }
+
+    func testTheSketchHoldAndTheStepLimits() {
+        XCTAssertEqual(SketchTiming.holdSeconds, 20)
+        XCTAssertEqual(SketchLimits.maxSteps, 6)
+        XCTAssertEqual(SketchLimits.maxStepTags, 24)
+        XCTAssertEqual(SketchLimits.maxLabelWords, 4)
+        XCTAssertEqual(SketchLimits.freeformAnswerMaxTokens, 1600)
     }
 
     func testTheArrowPointsUp() {

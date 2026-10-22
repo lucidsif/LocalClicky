@@ -31,6 +31,8 @@ final class AssistantMarksModel: ObservableObject {
         /// overlay shows the mark only when this is its own screen's frame.
         let displayFrame: CGRect
         let geometry: MarkGeometry
+        /// A freeform sketch's label for this shape (SketchLabel.swift); nil for every other mark.
+        let label: MarkLabel?
         /// 0...1, how much of the stroke is drawn so far.
         var progress: Double
     }
@@ -47,14 +49,14 @@ final class AssistantMarksModel: ObservableObject {
     private var clearTask: Task<Void, Never>?
 
     /// Adds a mark. `reduceMotion` is read by the caller from the system option.
-    func add(geometry: MarkGeometry, displayFrame: CGRect, reduceMotion: Bool) {
+    func add(geometry: MarkGeometry, displayFrame: CGRect, reduceMotion: Bool, label: MarkLabel? = nil) {
         // A new mark during a pending or running fade keeps the group on screen.
         clearTask?.cancel()
         clearTask = nil
         let startsGroup = marks.isEmpty
         if groupOpacity < 1 { groupOpacity = 1 }
 
-        let mark = Mark(displayFrame: displayFrame, geometry: geometry, progress: reduceMotion ? 1 : 0)
+        let mark = Mark(displayFrame: displayFrame, geometry: geometry, label: label, progress: reduceMotion ? 1 : 0)
         marks.append(mark)
 
         if reduceMotion {

@@ -53,6 +53,19 @@ final class VoiceRoutingRegressionTests: XCTestCase {
         assertRoutes(.screenPoint, ["where do i click to open settings", "where is the save button", "point at the search box"])
     }
 
+    func testStepSketchWordsRouteToASketchAndOnlyThose() {
+        for words in ["sketch out how to do parallel parking", "draw how a heart pumps blood", "diagram my morning routine",
+                      "illustrate how a heart pumps blood", "draw a house", "sketch a flowchart with three boxes"] {
+            XCTAssertEqual(drawingRoute(words), .screenSketch, words)
+        }
+        // Without a drawing word these are chat or pointing, as before.
+        for words in ["how do i parallel park", "show me how to parallel park", "show me how to reset my password",
+                      "draw conclusions from this", "draw up a contract", "draw attention to the error"] {
+            XCTAssertNotEqual(drawingRoute(words), .screenSketch, words)
+            XCTAssertEqual(drawingRoute(words), route(words), "drawing on does not change: \(words)")
+        }
+    }
+
     func testSketchAndDrawKeepTheirRoutes() {
         XCTAssertEqual(drawingRoute("draw a tic tac toe board"), .screenSketch)
         XCTAssertEqual(drawingRoute("circle the save button"), .screenDraw)

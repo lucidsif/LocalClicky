@@ -136,7 +136,11 @@ Three refinements ride on the routes above; each decision is a pure function in
   `SketchIntent.parse` returns a `SketchRequest` (figure, `SketchAnchor`, `SketchSize`,
   board) for words that ask for a figure that marks nothing; it is tested before the
   mark patterns and returns nil when the words name a target ("around the error",
-  "it"). draw, sketch and doodle also reach a freeform figure; put, place, make, show me,
+  "it"). draw, sketch, doodle, diagram and illustrate also reach a freeform figure (diagram and
+  illustrate only where a command starts, so "the diagram of the heart shows" is not one; a
+  leading "out", "how to" and "how do i" are dropped from the phrase after a drawing verb, so
+  "sketch out how to do parallel parking" is "parallel parking", and the same words after
+  "show me" or with no drawing word are untouched); put, place, make, show me,
   give me, add and create reach a figure only when the whole object is a `named` figure
   (the name, then at most a board word, a placement, a size or a tic tac toe move), so
   "show me the star wars trailer" and "show me the box score" are not sketches.
@@ -151,13 +155,69 @@ Three refinements ride on the routes above; each decision is a pure function in
   an edge margin, and the one sentence it speaks names the figure, the real place
   ("in the bottom left of your screen") and every tic tac toe move (or "empty") for
   anyone who cannot see the overlay. Freeform keeps the middle and the usual size: the
-  prompt has no placement. A freeform sketch with tags but no sentence speaks
-  `SketchLimits.drawnSentence`. Any other figure is a freeform sketch: the grounding model
-  writes up to `SketchLimits.maxTags` tags with `screenSketchResponse` (0 to 1000
-  frame, rescaled by the gateway), and `SketchLimits.freeformEnabled` turns that path
-  off with one line. A sketch holds `SketchTiming.holdSeconds` (10 s) after its
-  speech instead of the 1.5 s of a mark; a key press or "clear that" (`.clearMarks`)
-  ends it.
+  prompt has no placement. Any other figure is a freeform step sketch: the grounding model
+  writes up to `SketchLimits.maxSteps` (6) steps with `SketchPrompts.stepSketch` (0 to 1000
+  frame, rescaled by the gateway; `LocalPrompts.screenSketchResponse` stays pinned and
+  unused). A step is `[STEP]`, one short sentence, then its SHAPE tags; a label rides in the
+  tag's own label field (`[SHAPE:polygon:...:car in front]`), so the gateway, which rescales
+  SHAPE tags only, needs no change. The reply is read as it streams by
+  `SketchStepStream` (`SketchStepParser.parse` is that stream fed the whole reply, so the two
+  cannot differ): a step is handed over once the next `[STEP]` marker has fully arrived, or
+  at the end of the stream for the last one, so a tag or marker cut off at a chunk boundary is
+  never read early and step 1 is spoken and drawn while step 2 is still being written. At most `maxStepTags` (24) tags over all steps, labels
+  cut to `maxLabelWords` (4) words, a tag that does not validate, a HIGHLIGHT, and anything
+  past a limit dropped and counted, never guessed. A reply with no marker is one step. With
+  no valid tag the turn says `failureSentence`; tags with no sentence get `drawnSentence`.
+  Step marks bind to their sentence: the app closes a step's marks, then queues its
+  sentence (`SpeechMarkScheduler` binds every mark closed since the last sentence), step
+  by step as each completes (in `onText`; the canvas record is written when the stream
+  ends, and the previous kept layer is cleared when the first step starts), and the scheduler runs in hold mode (`holdsBoundMarks`): a bound mark has no
+  1.5 s timeout, because step 3 closes while step 1's clip is still playing and would
+  otherwise appear during step 1. It shows when its clip starts (or any later clip
+  starts); once every sentence has gone to the speech client and nothing has played for
+  `SketchTiming.flushGraceSeconds`, the mark driver flushes what is left. A step with no
+  sentence binds its marks to the next step's. A shape's label is drawn by
+  `AssistantMarksLayer` (`SketchLabelPlacement`: above the top edge of a closed shape or
+  curve, at the centre of a line or arrow, kept on screen) as white 15 pt text on a 0.85 black
+  backing (worst-case contrast about 15:1, tested against 4.5:1); only a sketch carries
+  labels, a circle drawn at a button has none. `SketchLimits.freeformEnabled` turns the
+  model path off with one line. `freeformAnswerMaxTokens` (1600) is derived in its comment. An unkept sketch holds `SketchTiming.holdSeconds` (20 s, so there is time to say
+  "keep it") after its speech instead of the 1.5 s of a mark; a key press or "clear that"
+  (`.clearMarks`) ends it.
+- **The sketch record and keeping** (`SketchCanvas`, pure; `CompanionManager.sketchCanvas`): every
+  sketch, template or freeform, is recorded when it is drawn: groups of (step sentences, SHAPE tags
+  on the 0 to 1000 grid, converted from screenshot pixels with the screenshot size), a `kept` flag,
+  and the pixel size it was drawn at. The marks are a drawing of the record. States: empty, showing
+  (unkept), kept, extending (a kept sketch with an extend turn in flight). A key press takes an
+  unkept sketch off the screen (`assistantMarks.clearNow`) but leaves the record, so "keep it" redraws
+  it from the record; any turn that is not about the sketch (`sketchRoutes`) forgets an unkept record,
+  and so does the end of its fade. `DrawingRouting.route` takes the canvas status (none, showing,
+  kept) and returns `.keepSketch` ("keep it", the whole utterance, so "keep it short" is not it; with
+  nothing drawn it says "nothing is drawn right now."), `.describeSketch` (any sketch), `.undoSketch` and
+  `.extendSketch` (kept only); without a kept sketch "undo that" and "add ..." route as before. These
+  checks come after the action routes and the click guard and before the sketch and mark patterns.
+  "and keep" inside a sketch request is `SketchRequest.keep` (taken out of the words first, since
+  its "it" would be a target cue). A new sketch replaces a kept one. Undo pops the last group and
+  redraws (the only group: clears). Describe reads "step 1: ... step 2: ..." from the record, no model.
+- **Extend** (`.extendSketch`, `SketchPrompts.extend`): a freeform sketch turn with the kept tags quoted
+  in the user turn between `<<<SKETCH ON SCREEN` and `SKETCH ON SCREEN>>>` as data, not instructions
+  (the `DraftPrompts` convention: a delimiter inside a label is broken, a label is one line), then the
+  request. The reply has the sketch format and limits; it is recorded as a new group and drawn over the
+  kept marks in the pixels the sketch was first drawn at (the grid makes the screenshot size of the
+  extend irrelevant). Extend words (`SketchCanvasIntent.wantsExtend`): add or label (not a number, a
+  reminder, a note... or "to my list"), "the next step", "... too", "also draw ...", "extend the
+  sketch". They route only with a kept sketch, so a kept sketch does take "add a star" from the
+  template route, and "add milk to my shopping list" is the kind of phrase the exclusions are for.
+- **The kept layer** (`KeptSketchWindows.swift`): kept marks live in their own click-through window per
+  screen (`ignoresMouseEvents`, `sharingType = .none`, one level below the cursor overlay), driven by
+  a second `AssistantMarksModel`. It is not on `OverlayWindow` because `.none` there would hide the
+  blue cursor from the user's screen sharing and the overlay is torn down with the transient cursor.
+  The model's screenshots exclude it twice: `CompanionScreenCaptureUtility` already removes every window
+  of this app from its capture filter, and `sharingType = .none`. Not yet verified live. The window
+  also holds the "Kept. Say clear to remove." pill (`KeptBadge`: centred under the sketch's bounds,
+  kept on screen, white on 0.85 black like the labels, contrast about 15:1 against the 4.5:1 required);
+  it is removed with the marks, hidden from accessibility, and says nothing (the spoken
+  "kept. say clear to remove it." is the VoiceOver path).
 - **Clear** (`ClearMarksIntent`): "clear/erase/wipe/remove/get rid of/undo" plus a drawing
   word, a tic tac toe name (any speech-to-text spelling), "the board", "the grid", or
   "the/that/your" plus any template figure name. A bare "that" counts only after clear,
@@ -165,7 +225,8 @@ Three refinements ride on the routes above; each decision is a pure function in
   is routed before the base route. The key press clears the marks before the words are
   heard, so `CompanionManager` remembers whether marks were showing at the press
   (`marksShownAtPress`); with none it speaks "nothing is drawn right now." and the turn
-  ends there, never falling through to chat.
+  ends there, never falling through to chat. With a sketch on the record (kept or not) "clear"
+  also drops the record and the kept window.
 - **History note** (`SketchHistory.note`): a sketch turn records "(drew a tic tac toe
   board)" in the conversation history instead of its sentence, for template and freeform
   turns alike, so a later chat turn has nothing to recite. `lastSpokenAnswer` keeps the

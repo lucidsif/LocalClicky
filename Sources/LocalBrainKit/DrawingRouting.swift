@@ -52,16 +52,29 @@ public enum DrawingIntent {
 }
 
 public enum DrawingRouting {
+    /// `sketchCanvas` is what is known about the sketch record (SketchCanvas.status): nothing, an unkept sketch
+    /// (on the screen, or taken off by a key press), or a kept one. "keep it" and "describe the sketch" need a
+    /// sketch to mean anything; "undo that" and "add the curb" need a kept one, and without one they route as
+    /// they always did.
     public static func route(transcript: String,
                              context: ConversationRouter.Context,
                              hasUsableInk: Bool,
-                             drawingEnabled: Bool) -> ConversationRoute {
+                             drawingEnabled: Bool,
+                             sketchCanvas: SketchCanvasStatus = .none) -> ConversationRoute {
         let base = InkRouting.route(transcript: transcript, context: context, hasUsableInk: hasUsableInk)
         guard drawingEnabled, context.visionModeSelected, context.screenAvailable else { return base }
         let text = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if ClearMarksIntent.wants(text) { return .clearMarks }
         guard base == .screen || base == .screenPoint || base == .text else { return base }
         guard !ConversationRouter.wantsClick(text) else { return base }
+        // Words about the sketch itself, before a new sketch or a mark is considered. "keep it" always routes
+        // (with nothing drawn it says so), so it never becomes a chat question about "it".
+        if SketchCanvasIntent.wantsKeep(text) { return .keepSketch }
+        if sketchCanvas != .none, SketchCanvasIntent.wantsDescribe(text) { return .describeSketch }
+        if sketchCanvas == .kept {
+            if SketchCanvasIntent.wantsUndo(text) { return .undoSketch }
+            if SketchCanvasIntent.wantsExtend(text) { return .extendSketch }
+        }
         // A sketch is tested before the marks: DrawingIntent matches "draw ... box|arrow|circle"
         // and would turn "draw a box in the middle of the screen" into a mark of some control.
         if SketchIntent.figure(text) != nil { return .screenSketch }

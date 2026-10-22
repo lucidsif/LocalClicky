@@ -168,6 +168,89 @@ final class SpeechMarkSchedulerTests: XCTestCase {
         XCTAssertEqual(other.release(), [])
     }
 
+    // MARK: - hold mode (step sketches)
+
+    func testHoldModeKeepsAStepsMarksUntilItsOwnClipStarts() {
+        var s = Scheduler(holdsBoundMarks: true)
+        // A step sketch closes every step's marks and queues every sentence at once.
+        s.markClosed("step1-a", at: 0)
+        s.markClosed("step1-b", at: 0)
+        let c1 = s.sentenceQueued()
+        s.markClosed("step2-a", at: 0)
+        let c2 = s.sentenceQueued()
+        s.markClosed("step3-a", at: 0)
+        let c3 = s.sentenceQueued()
+
+        XCTAssertEqual(s.release(at: 30), [], "no timeout while the clips have not started")
+        s.clipStarted(id: c1, at: 31)
+        XCTAssertEqual(s.release(at: 31), ["step1-a", "step1-b"])
+        XCTAssertEqual(s.release(at: 60), [], "step 2 waits for its sentence")
+        s.clipStarted(id: c2, at: 36)
+        XCTAssertEqual(s.release(at: 36), ["step2-a"])
+        s.clipStarted(id: c3, at: 40)
+        XCTAssertEqual(s.release(at: 40), ["step3-a"])
+        XCTAssertFalse(s.hasPending)
+    }
+
+    func testDefaultModeStillTimesTheSameCaseOut() {
+        // The reason hold mode exists: without it step 3 would show during step 1.
+        var s = Scheduler()
+        s.markClosed("step1", at: 0)
+        _ = s.sentenceQueued()
+        s.markClosed("step3", at: 0)
+        _ = s.sentenceQueued()
+        XCTAssertEqual(s.release(at: 1.5), ["step1", "step3"])
+    }
+
+    func testHoldModeAClipThatNeverAnnouncesItselfIsOverWhenALaterOneStarts() {
+        var s = Scheduler(holdsBoundMarks: true)
+        s.markClosed("a", at: 0)
+        _ = s.sentenceQueued()
+        s.markClosed("b", at: 0)
+        let c2 = s.sentenceQueued()
+        s.clipStarted(id: c2, at: 5)
+        XCTAssertEqual(s.release(at: 5), ["a", "b"])
+    }
+
+    func testHoldModeAMarkNoSentenceBoundStillTimesOut() {
+        var s = Scheduler(holdsBoundMarks: true)
+        s.markClosed("lonely", at: 5)
+        XCTAssertEqual(s.release(at: 6.49), [])
+        XCTAssertEqual(s.release(at: 6.5), ["lonely"])
+    }
+
+    func testFlushEndsTheWaitInOrder() {
+        var s = Scheduler(holdsBoundMarks: true)
+        s.markClosed("a", at: 0)
+        _ = s.sentenceQueued()
+        s.markClosed("b", at: 0)
+        _ = s.sentenceQueued()
+        XCTAssertEqual(s.release(at: 100), [])
+        XCTAssertEqual(s.nextDueTime, .infinity)
+        s.flush(at: 101)
+        XCTAssertEqual(s.release(at: 101), ["a", "b"])
+        XCTAssertEqual(s.releasedCount, 2)
+    }
+
+    func testBoxPassesHoldModeAndFlush() {
+        let clock = ClockBox()
+        let box = SpeechMarkSchedulerBox<String>(holdsBoundMarks: true, clock: { clock.now })
+        XCTAssertTrue(box.isHolding)
+        XCTAssertFalse(SpeechMarkSchedulerBox<String>().isHolding)
+        box.markClosed("a")
+        let clip = box.sentenceQueued()
+        clock.now = 50
+        XCTAssertEqual(box.release(), [])
+        XCTAssertFalse(box.isSpeechQueued)
+        box.markSpeechQueued()
+        XCTAssertTrue(box.isSpeechQueued)
+        box.finishInput()
+        box.flush()
+        XCTAssertEqual(box.release(), ["a"])
+        box.clipStarted(id: clip)
+        XCTAssertTrue(box.isDone)
+    }
+
     func testBoxKeepsStreamOrderUnderConcurrentUse() {
         let box = SpeechMarkSchedulerBox<Int>()
         let group = DispatchGroup()
